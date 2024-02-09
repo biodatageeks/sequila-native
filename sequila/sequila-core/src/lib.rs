@@ -1,5 +1,7 @@
 pub mod session_context;
 
+mod physical_planner;
+
 pub fn add(left: usize, right: usize) -> usize {
     left + right
 }
