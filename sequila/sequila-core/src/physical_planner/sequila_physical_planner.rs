@@ -29,6 +29,7 @@ impl PhysicalOptimizerRule for RangeJoinPhysicalOptimizationRule {
         info!("Applying {}...", self.name());
         plan.transform_down(&|plan| {
             Ok(
+                //TODO: Add a check if the plan is a range join (e.g. pattern matching on join and filters) and not only a hash join
                 if let Some(join_exec) = plan.as_any().downcast_ref::<HashJoinExec>(){
                     info!("Detected HashJoinExec with Range filters. Optimizing into IntervalSearchJoin...");
                     Transformed::Yes(Arc::new(IntervalSearchJoinExec::try_new(

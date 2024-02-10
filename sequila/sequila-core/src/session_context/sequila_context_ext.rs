@@ -22,7 +22,7 @@ impl SeQuiLaSessionExt for SessionContext {
         Self::with_config_rt_sequila(config, runtime)
     }
     fn with_config_rt_sequila(config: SessionConfig, runtime: Arc<RuntimeEnv>) -> SessionContext {
-        let mut state = SessionState::new_with_config_rt(config, runtime);
+        let state = SessionState::new_with_config_rt(config, runtime);
         let ctx = SessionContext::new_with_state(
             state
                 .with_query_planner(Arc::new(SeQuiLaQueryPlanner::default()))
