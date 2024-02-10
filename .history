@@ -29,3 +29,25 @@ CREATE EXTERNAL TABLE test\nSTORED AS PARQUET\nLOCATION '/Users/mwiewior/researc
 CREATE EXTERNAL TABLE test2\nSTORED AS PARQUET\nLOCATION '/Users/mwiewior/research/data/AIListTestData/chainXenTro3Link.parquet';
 explain select count(*) from test a join test2 b on a._c0=b._c0;
 \\q
+CREATE EXTERNAL TABLE test\nSTORED AS PARQUET\nLOCATION '/Users/mwiewior/research/data/AIListTestData/chainXenTro3Link.parquet';
+CREATE EXTERNAL TABLE test2\nSTORED AS PARQUET\nLOCATION '/Users/mwiewior/research/data/AIListTestData/chainXenTro3Link.parquet';
+explain select count(*) from test a join test2 b on a._c0=b._c0;
+\\q
+CREATE EXTERNAL TABLE test\nSTORED AS PARQUET\nLOCATION '/Users/mwiewior/research/data/AIListTestData/chainXenTro3Link.parquet';
+CREATE EXTERNAL TABLE test2\nSTORED AS PARQUET\nLOCATION '/Users/mwiewior/research/data/AIListTestData/chainXenTro3Link.parquet';
+explain select count(*) from test a join test2 b on a._c0=b._c0;
+\\q
+CREATE EXTERNAL TABLE test\nSTORED AS PARQUET\nLOCATION '/Users/mwiewior/research/data/AIListTestData/chainXenTro3Link.parquet';
+CREATE EXTERNAL TABLE test2\nSTORED AS PARQUET\nLOCATION '/Users/mwiewior/research/data/AIListTestData/chainXenTro3Link.parquet';
+explain select count(*) from test a join test2 b on a._c0=b._c0;
+\\q
+CREATE EXTERNAL TABLE test\nSTORED AS PARQUET\nLOCATION '/Users/mwiewior/research/data/AIListTestData/chainXenTro3Link.parquet';
+CREATE EXTERNAL TABLE test2\nSTORED AS PARQUET\nLOCATION '/Users/mwiewior/research/data/AIListTestData/chainXenTro3Link.parquet';
+explain select count(*) from test a join test2 b on a._c0=b._c0;
+\\q
+CREATE EXTERNAL TABLE test\nSTORED AS PARQUET\nLOCATION '/Users/mwiewior/research/data/AIListTestData/chainXenTro3Link.parquet';
+\\q
+CREATE EXTERNAL TABLE test\nSTORED AS PARQUET\nLOCATION '/Users/mwiewior/research/data/AIListTestData/chainXenTro3Link.parquet';
+CREATE EXTERNAL TABLE test2\nSTORED AS PARQUET\nLOCATION '/Users/mwiewior/research/data/AIListTestData/chainXenTro3Link.parquet';
+explain verbose select count(*) from test a join test2 b on a._c0=b._c0;
+\\q

@@ -1,22 +1,19 @@
+use crate::physical_planner::joins::IntervalSearchJoinExec;
 use async_trait::async_trait;
 use datafusion::common::tree_node::{Transformed, TreeNode};
-use datafusion::common::{DFSchema, JoinType};
+use datafusion::common::DFSchema;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::{Expr, LogicalPlan};
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_optimizer::topk_aggregation::TopKAggregation;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
-use datafusion::physical_plan::insert::FileSinkExec;
-use datafusion::physical_plan::joins::utils::{JoinFilter, JoinOn};
-use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
+use datafusion::physical_plan::joins::HashJoinExec;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 use log::info;
 use std::sync::Arc;
 
 #[derive(Default)]
-
 pub struct SeQuiLaPhysicalPlanner {
     planner: DefaultPhysicalPlanner,
 }
@@ -29,12 +26,12 @@ impl PhysicalOptimizerRule for RangeJoinPhysicalOptimizationRule {
         plan: Arc<dyn ExecutionPlan>,
         config: &ConfigOptions,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        info!("Applying RangeJoinPhysicalOptimizationRule...");
+        info!("Applying {}...", self.name());
         plan.transform_down(&|plan| {
             Ok(
                 if let Some(join_exec) = plan.as_any().downcast_ref::<HashJoinExec>(){
-                    info!("Detected HashJoinExec with Range filters. Optimizing into RangeJoinExec...");
-                    Transformed::Yes(Arc::new(HashJoinExec::try_new(
+                    info!("Detected HashJoinExec with Range filters. Optimizing into IntervalSearchJoin...");
+                    Transformed::Yes(Arc::new(IntervalSearchJoinExec::try_new(
                         join_exec.left().clone(),
                         join_exec.right().clone(),
                         join_exec.on.clone(),

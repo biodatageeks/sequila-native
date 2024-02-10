@@ -4,8 +4,7 @@ use async_trait::async_trait;
 use datafusion::execution::context::SessionState;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::prelude::{SessionConfig, SessionContext};
-use env_logger::Env;
-use log::{info, trace, warn};
+use log::info;
 use std::sync::Arc;
 
 /// Extension trait for [`SessionContext`] that adds Exon-specific functionality.
