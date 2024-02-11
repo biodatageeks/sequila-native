@@ -17,6 +17,8 @@
 
 //! Join related functionality used both on logical and physical plans
 
+use coitrees::COITree;
+use fnv::FnvHashMap;
 use std::collections::HashSet;
 use std::fmt::{self, Debug};
 use std::future::Future;
@@ -117,6 +119,30 @@ pub struct JoinHashMap {
     map: RawTable<(u64, u64)>,
     // Stores indices in chained list data structure
     next: Vec<u64>,
+}
+
+pub struct IntervalJoinHashMap {
+    // Stores hash value to last row index
+    //TODO: Check if we can go with u64 - for now it fails with ^^^^^^^^^^^^^^^^ the trait `IntWithMax` is not implemented for `u64`
+    // Contig sizes are u32, so we don't need to use u64 but still it would make sense to use u64 for the sake of consistency
+    map: FnvHashMap<String, COITree<u64, u32>>,
+    // Stores indices in chained list data structure
+    next: Vec<u64>,
+}
+
+impl IntervalJoinHashMap {
+    pub fn new(map: FnvHashMap<String, COITree<u64, u32>>, next: Vec<u64>) -> Self {
+        Self { map, next }
+    }
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
+        IntervalJoinHashMap {
+            map: FnvHashMap::<String, COITree<u64, u32>>::with_capacity_and_hasher(
+                capacity,
+                Default::default(),
+            ),
+            next: vec![0; capacity],
+        }
+    }
 }
 
 impl JoinHashMap {

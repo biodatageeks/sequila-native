@@ -28,9 +28,8 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-
 #[tokio::test]
-async fn test_interval_rule_eq() -> datafusion::error::Result<()>  {
+async fn test_interval_rule_eq() -> datafusion::error::Result<()> {
     env_logger::init();
     let options = ConfigOptions::new();
     let config = SessionConfig::from(options);
@@ -39,8 +38,11 @@ async fn test_interval_rule_eq() -> datafusion::error::Result<()>  {
     ctx.sql(sql).await.unwrap();
     let sql = "CREATE TABLE read (contig TEXT, pos_start INT, pos_end INT)";
     ctx.sql(sql).await.unwrap();
-    let df = ctx.sql("EXPLAIN SELECT COUNT(*) FROM target a JOIN read b ON a.contig=b.contig \
-            WHERE a.pos_end >= b.pos_start AND a.pos_start <= b.pos_end")
+    let df = ctx
+        .sql(
+            "SELECT COUNT(*) FROM target a JOIN read b ON a.contig=b.contig \
+           AND a.pos_end >= b.pos_start AND a.pos_start <= b.pos_end",
+        )
         .await?;
     df.show().await?;
     Ok(())
