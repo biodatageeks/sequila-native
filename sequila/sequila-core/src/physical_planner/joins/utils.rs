@@ -17,7 +17,7 @@
 
 //! Join related functionality used both on logical and physical plans
 
-use coitrees::COITree;
+use coitrees::{COITree, IntWithMax};
 use fnv::FnvHashMap;
 use std::collections::HashSet;
 use std::fmt::{self, Debug};
