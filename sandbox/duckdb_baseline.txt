@@ -220,3 +220,98 @@ D select count(*) from chainRn4 a, chainVicPac2 b where (a.column0=b.column0 and
 └──────────────┘
 Run Time (s): real 157.909 user 156.254886 sys 1.283438
 
+
+
+####
+D PRAGMA prefer_range_joins=true;
+Run Time (s): real 0.000 user 0.000184 sys 0.000020
+D select count(*) from chainXenTro3Link_chr1;
+┌──────────────┐
+│ count_star() │
+│    int64     │
+├──────────────┤
+│      2676986 │
+└──────────────┘
+Run Time (s): real 0.001 user 0.001244 sys 0.000157
+D select count(*) from chainRn4_chr1;
+┌──────────────┐
+│ count_star() │
+│    int64     │
+├──────────────┤
+│       207146 │
+└──────────────┘
+Run Time (s): real 0.001 user 0.000471 sys 0.000038
+
+
+
+D select count(*) from chainRn4_chr1 a, chainXenTro3Link_chr1 b where (a.column0=b.column0 and a.column2>=b.column1 and a.column1<=b.column2);
+
+D explain select count(*) from chainRn4_chr1 a, chainXenTro3Link_chr1 b where (a.column0=b.column0 and a.column2>=b.column1 and a.column1<=b.column2);
+
+┌─────────────────────────────┐
+│┌───────────────────────────┐│
+││       Physical Plan       ││
+│└───────────────────────────┘│
+└─────────────────────────────┘
+┌───────────────────────────┐
+│    UNGROUPED_AGGREGATE    │
+│   ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─   │
+│        count_star()       │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│          IE_JOIN          │
+│   ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─   │
+│           INNER           │
+│     column2 >= column1    │
+│     column1 <= column2    ├──────────────┐
+│     column0 = column0     │              │
+│   ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─   │              │
+│        EC: 3027273        │              │
+└─────────────┬─────────────┘              │
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│         SEQ_SCAN          ││         SEQ_SCAN          │
+│   ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─   ││   ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─   │
+│   chainXenTro3Link_chr1   ││       chainRn4_chr1       │
+│   ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─   ││   ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─   │
+│          column0          ││          column0          │
+│          column1          ││          column2          │
+│          column2          ││          column1          │
+│   ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─   ││   ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─   │
+│        EC: 2676986        ││Filters: column1<=249231234│
+│                           ││   AND column1 IS NOT NULL │
+│                           ││   ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─   │
+│                           ││         EC: 207146        │
+└───────────────────────────┘└───────────────────────────┘
+Run Time (s): real 0.002 user 0.000936 sys 0.000182
+
+[2024-02-15T18:17:07Z INFO  sequila_cli] Total indexes build time: 221.46544ms
+[2024-02-15T18:17:07Z INFO  sequila_cli] ---------------------------------
+[2024-02-15T18:17:07Z INFO  sequila_cli] Index lines: 207146
+[2024-02-15T18:17:10Z INFO  sequila_cli] Query lines  2676986
+[2024-02-15T18:17:10Z INFO  sequila_cli] ---------------------------------
+[2024-02-15T18:17:18Z INFO  sequila_cli] Overlaps [avl-rustbio]: 1186362437
+[2024-02-15T18:17:18Z INFO  sequila_cli] Query time [[avl-rustbio]]: 8.414027547s
+[2024-02-15T18:17:18Z INFO  sequila_cli] ---------------------------------
+[2024-02-15T18:17:20Z INFO  sequila_cli] Overlaps [Coitrees]: 1190072815
+[2024-02-15T18:17:20Z INFO  sequila_cli] Query time [Coitrees]: 1.951231399s
+[2024-02-15T18:17:20Z INFO  sequila_cli] ---------------------------------
+[2024-02-15T18:17:25Z INFO  sequila_cli] Overlaps [IIT-C++]: 1186362437
+[2024-02-15T18:17:25Z INFO  sequila_cli] Query time [IIT-C++]: 5.325190651s
+[2024-02-15T18:17:25Z INFO  sequila_cli] ---------------------------------
+[2024-02-15T18:17:32Z INFO  sequila_cli] Overlaps [IIT-BFS-C++]: 1186362437
+[2024-02-15T18:17:32Z INFO  sequila_cli] Query time [IIT-BFS-C++]: 6.754702249s
+[2024-02-15T18:17:32Z INFO  sequila_cli] ---------------------------------
+[2024-02-15T18:17:36Z INFO  sequila_cli] Overlaps [IIT-rustbio]: 1186362437
+[2024-02-15T18:17:36Z INFO  sequila_cli] Query time [IIT-rustbio]: 4.15450265s
+[2024-02-15T18:17:36Z INFO  sequila_cli] ---------------------------------
+
+
+D select count(*) from chainRn4_chr1 a, chainXenTro3Link_chr1 b where (a.column2>=b.column1 and a.column1<=b.column2);
+100% ▕████████████████████████████████████████████████████████████▏
+┌──────────────┐
+│ count_star() │
+│    int64     │
+├──────────────┤
+│   1190072815 │
+└──────────────┘
+Run Time (s): real 27.932 user 27.683828 sys 0.201780

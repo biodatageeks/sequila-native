@@ -18,3 +18,7 @@ Cargo.lock
 
 sandbox/
 .history
+
+.vscode
+
+*.out.*
