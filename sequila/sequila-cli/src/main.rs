@@ -40,7 +40,7 @@ async fn test_interval_rule_eq() -> datafusion::error::Result<()> {
     ctx.sql(sql).await.unwrap();
     let df = ctx
         .sql(
-            "SELECT COUNT(*) FROM target a JOIN read b ON a.contig=b.contig \
+            "SELECT COUNT(*) FROM target a JOIN read b ON a.contig = b.contig \
            AND a.pos_end >= b.pos_start AND a.pos_start <= b.pos_end",
         )
         .await?;

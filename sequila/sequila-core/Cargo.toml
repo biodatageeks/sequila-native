@@ -11,12 +11,12 @@ version.workspace = true
 
 [dependencies]
 async-trait = "0.1.77"
-datafusion = "35.0.0"
-log = "0.4.20"
-env_logger = "0.11.1"
-emojis = "0.6.1"
-arrow = "50.0.0"
-tokio = "1.36.0"
+datafusion.workspace = true
+log.workspace = true
+env_logger.workspace = true
+emojis.workspace = true
+arrow.workspace = true
+tokio.workspace = true
 ahash = "0.8.7"
 futures = { version = "0.3.30", features = [] }
 hashbrown = "0.14.3"
