@@ -1,3 +1,4 @@
+use crate::physical_planner::interval_join::IntervalJoinExec;
 use crate::physical_planner::joins::IntervalSearchJoinExec;
 use async_trait::async_trait;
 use datafusion::common::tree_node::{Transformed, TreeNode};
@@ -34,8 +35,9 @@ impl PhysicalOptimizerRule for RangeJoinPhysicalOptimizationRule {
                 //TODO: Add a check if the plan is a range join (e.g. pattern matching on join and filters) and not only a hash join
                 Some(join_exec) if is_range_join(join_exec) => {
                     info!("Detected HashJoinExec with Range filters. Optimizing into IntervalSearchJoin...");
+                    println!("Detected HashJoinExec with Range filters. Optimizing into IntervalSearchJoin...");
                     // info!("Join {:#?}", join_exec);
-                    let new_plan = IntervalSearchJoinExec::try_new(
+                    let new_plan = IntervalJoinExec::try_new(
                         join_exec.left().clone(),
                         join_exec.right().clone(),
                         join_exec.on.clone(),

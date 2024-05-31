@@ -18,6 +18,7 @@
 //! [`IntervalSearchJoinExec`] Partitioned Hash Join Operator
 
 use std::fmt;
+use std::fmt::Debug;
 use std::mem::size_of;
 use std::sync::Arc;
 use std::task::Poll;
@@ -738,13 +739,14 @@ async fn collect_left_input(
     reservation.try_grow(estimated_hastable_size)?;
     metrics.build_mem_used.add(estimated_hastable_size);
 
-    let mut hashmap = JoinHashMap::with_capacity(num_rows);
+    let mut hashmap = JoinHashMap::with_capacity(num_rows); // hash map
     let mut hashes_buffer = Vec::new();
     let mut offset = 0;
 
     // Updating hashmap starting from the last batch
     let batches_iter = batches.iter().rev();
     for batch in batches_iter.clone() {
+        // build a left hash map
         hashes_buffer.clear();
         hashes_buffer.resize(batch.num_rows(), 0);
         update_hash(
@@ -785,7 +787,7 @@ pub fn update_hash<T>(
     fifo_hashmap: bool,
 ) -> Result<()>
 where
-    T: JoinHashMapType,
+    T: JoinHashMapType + Debug,
 {
     // evaluate the keys
     let keys_values = on

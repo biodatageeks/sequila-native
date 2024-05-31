@@ -19,8 +19,8 @@
 
 use coitrees::{COITree, IntWithMax};
 use fnv::FnvHashMap;
-use std::collections::HashSet;
-use std::fmt::{self, Debug};
+use std::collections::{HashMap, HashSet};
+use std::fmt::{self, Debug, Formatter};
 use std::future::Future;
 use std::ops::{IndexMut, Range};
 use std::sync::Arc;
@@ -119,6 +119,23 @@ pub struct JoinHashMap {
     map: RawTable<(u64, u64)>,
     // Stores indices in chained list data structure
     next: Vec<u64>,
+}
+
+impl std::fmt::Debug for JoinHashMap {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let mut hm = HashMap::with_capacity(self.map.capacity());
+        unsafe {
+            for b in self.map.iter() {
+                let (k, v) = b.as_ref();
+                hm.insert(k, v);
+            }
+        }
+
+        f.debug_struct("JoinHashMap")
+            .field("map", &hm)
+            .field("next", &self.next)
+            .finish()
+    }
 }
 
 pub struct IntervalJoinHashMap {
@@ -384,12 +401,6 @@ impl JoinHashMapType for JoinHashMap {
     /// Get a reference to the next.
     fn get_list(&self) -> &Self::NextType {
         &self.next
-    }
-}
-
-impl fmt::Debug for JoinHashMap {
-    fn fmt(&self, _f: &mut fmt::Formatter) -> fmt::Result {
-        Ok(())
     }
 }
 

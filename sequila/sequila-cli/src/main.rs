@@ -8,7 +8,7 @@ use datafusion_cli::print_options::PrintOptions;
 use log::info;
 use sequila_core::session_context::SeQuiLaSessionExt;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     env_logger::init();
     let options = ConfigOptions::new();
