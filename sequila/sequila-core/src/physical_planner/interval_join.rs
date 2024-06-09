@@ -4,13 +4,11 @@ use crate::physical_planner::joins::utils::{
 use crate::physical_planner::joins::IntervalSearchJoinExec;
 use ahash::RandomState;
 use arrow::array::{
-    Array, AsArray, PrimitiveArray, RecordBatch, UInt32Array, UInt32BufferBuilder, UInt64Array,
-    UInt64BufferBuilder,
+    Array, AsArray, PrimitiveArray, RecordBatch, UInt32Array, UInt32BufferBuilder
 };
 use arrow::compute::concat_batches;
 use arrow::datatypes::DataType;
 use arrow::datatypes::{Schema, SchemaRef};
-use arrow::{datatypes as adt, downcast_primitive_array};
 use coitrees::*;
 use datafusion::common::hash_utils::create_hashes;
 use datafusion::common::Result;
@@ -19,7 +17,7 @@ use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
 use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::equivalence::join_equivalence_properties;
-use datafusion::physical_expr::expressions::{BinaryExpr, Column};
+use datafusion::physical_expr::expressions::{BinaryExpr, CastExpr, Column};
 use datafusion::physical_expr::{
     Distribution, EquivalenceProperties, Partitioning, PhysicalExpr, PhysicalSortExpr,
 };
@@ -417,10 +415,8 @@ impl ExecutionPlan for IntervalJoinExec {
             );
         }
 
-        let start_end = self.filter().and_then(find_start_end).unwrap();
-
-        let left_start_end = start_end.0;
-        let right_start_end = start_end.1;
+        let (left_interval, right_interval) = self.filter().and_then(parse_filter)
+            .expect(format!("couldn't parse {:?}", self.filter()).as_str());
 
         let join_metrics = BuildProbeJoinMetrics::new(partition, &self.metrics);
         let left_fut = match self.mode {
@@ -435,7 +431,7 @@ impl ExecutionPlan for IntervalJoinExec {
                     context.clone(),
                     join_metrics.clone(),
                     reservation,
-                    (left_start_end.0 .0.clone(), left_start_end.1 .0.clone()),
+                    left_interval,
                 )
             }),
             PartitionMode::Partitioned => {
@@ -450,7 +446,7 @@ impl ExecutionPlan for IntervalJoinExec {
                     context.clone(),
                     join_metrics.clone(),
                     reservation,
-                    (right_start_end.0 .0.clone(), right_start_end.1 .0.clone()),
+                    left_interval
                 ))
             }
             PartitionMode::Auto => {
@@ -481,6 +477,7 @@ impl ExecutionPlan for IntervalJoinExec {
             join_metrics,
             null_equals_null: self.null_equals_null,
             reservation,
+            right_interval,
         }))
     }
 }
@@ -493,7 +490,7 @@ async fn collect_left_input(
     context: Arc<TaskContext>,
     metrics: BuildProbeJoinMetrics,
     reservation: MemoryReservation,
-    start_end: (ColumnIndex, ColumnIndex),
+    left_interval: ColInterval
 ) -> datafusion::common::Result<JoinLeftData> {
     let schema = left.schema();
 
@@ -553,8 +550,6 @@ async fn collect_left_input(
     let mut hashes_buffer = Vec::new();
     let mut offset = 0;
 
-    let start_end = vec![start_end.0, start_end.1];
-
     // Updating hashmap starting from the last batch
     for batch in &batches {
         // build a left hash map
@@ -562,7 +557,7 @@ async fn collect_left_input(
         hashes_buffer.resize(batch.num_rows(), 0);
         update_hashmap(
             &on_left,
-            &start_end,
+            &left_interval,
             &batch,
             &mut hashmap,
             offset,
@@ -586,7 +581,7 @@ async fn collect_left_input(
 
 fn update_hashmap(
     on: &[Column],
-    start_end: &[ColumnIndex],
+    left_interval: &ColInterval,
     batch: &RecordBatch,
     hash_map: &mut std::collections::HashMap<u64, Vec<Interval<Metadata>>>,
     offset: usize,
@@ -606,13 +601,13 @@ fn update_hashmap(
         .map(|(i, val)| (i + offset, val))
         .collect::<Vec<_>>();
 
-    let start_end = start_end
-        .iter()
-        .map(|c| batch.column(c.index))
-        .collect::<Vec<_>>();
+    let start = batch
+        .column(left_interval.start.index)
+        .as_primitive::<arrow::datatypes::Int64Type>();
 
-    let start = start_end[0].as_primitive::<arrow::datatypes::Int64Type>();
-    let end = start_end[1].as_primitive::<arrow::datatypes::Int64Type>();
+    let end = batch
+        .column(left_interval.end.index)
+        .as_primitive::<arrow::datatypes::Int64Type>();
 
     for i in 0..batch.num_rows() {
         let (position, hash_val) = hash_values_iter[i];
@@ -650,6 +645,8 @@ struct IntervalJoinStream {
     null_equals_null: bool,
     /// Memory reservation
     reservation: MemoryReservation,
+
+    right_interval: ColInterval,
 }
 
 impl IntervalJoinStream {
@@ -661,10 +658,6 @@ impl IntervalJoinStream {
             Ok(left_data) => left_data,
             Err(e) => return Poll::Ready(Some(Err(e))),
         };
-
-        let start_end = self.filter.as_ref().and_then(find_start_end).unwrap().1;
-        let right_start = start_end.0;
-        let right_end = start_end.1;
 
         self.right
             .poll_next_unpin(cx)
@@ -682,13 +675,8 @@ impl IntervalJoinStream {
                     hashes_buffer.resize(batch.num_rows(), 0);
                     create_hashes(&rights, &self.random_state, &mut hashes_buffer).ok()?;
 
-                    let start_end = vec![right_start.0.index, right_end.0.index]
-                        .iter()
-                        .map(|c| batch.column(*c))
-                        .collect::<Vec<_>>();
-
-                    let start = start_end[0].as_primitive::<arrow::datatypes::Int64Type>();
-                    let end = start_end[1].as_primitive::<arrow::datatypes::Int64Type>();
+                    let start = batch.column(self.right_interval.start.index).as_primitive::<arrow::datatypes::Int64Type>();
+                    let end = batch.column(self.right_interval.end.index).as_primitive::<arrow::datatypes::Int64Type>();
 
                     let mut left_builder = UInt32BufferBuilder::new(0);
                     let mut right_builder = UInt32BufferBuilder::new(0);
@@ -727,67 +715,6 @@ impl IntervalJoinStream {
     }
 }
 
-// Some(
-// BinaryExpr {
-// left: BinaryExpr {
-//      left: Column { name: "b1", index: 0 }, op: GtEq, right: Column { name: "b2", index: 2 } },
-// op: And,
-// right: BinaryExpr {
-//      left: Column { name: "c1", index: 1 }, op: LtEq, right: Column { name: "c2", index: 3 } }
-// })
-
-#[derive(Debug)]
-struct ColToSelect {
-    left: (String, String, Operator),
-    right: (String, String, Operator),
-}
-
-fn parse_filter(filter: &JoinFilter) -> ColToSelect {
-    let be = filter
-        .expression()
-        .as_any()
-        .downcast_ref::<BinaryExpr>()
-        .unwrap();
-    if (*be.op() == Operator::And) {
-        let left = be.left().as_any().downcast_ref::<BinaryExpr>().unwrap();
-        let ll = left
-            .left()
-            .as_any()
-            .downcast_ref::<Column>()
-            .unwrap()
-            .name()
-            .to_string();
-        let lr = left
-            .right()
-            .as_any()
-            .downcast_ref::<Column>()
-            .unwrap()
-            .name()
-            .to_string();
-        let right = be.right().as_any().downcast_ref::<BinaryExpr>().unwrap();
-        let rl = right
-            .left()
-            .as_any()
-            .downcast_ref::<Column>()
-            .unwrap()
-            .name()
-            .to_string();
-        let rr = right
-            .right()
-            .as_any()
-            .downcast_ref::<Column>()
-            .unwrap()
-            .name()
-            .to_string();
-        return ColToSelect {
-            left: (ll, lr, *left.op()),
-            right: (rl, rr, *right.op()),
-        };
-    } else {
-        panic!("wtf");
-    }
-}
-
 impl RecordBatchStream for IntervalJoinStream {
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
@@ -805,84 +732,92 @@ impl Stream for IntervalJoinStream {
     }
 }
 
-fn find_start_end(
-    filter: &JoinFilter,
-) -> Option<(
-    (
-        (&ColumnIndex, &Arc<arrow::datatypes::Field>),
-        (&ColumnIndex, &Arc<arrow::datatypes::Field>),
-    ),
-    (
-        (&ColumnIndex, &Arc<arrow::datatypes::Field>),
-        (&ColumnIndex, &Arc<arrow::datatypes::Field>),
-    ),
-)> {
-    let fields = filter.schema().fields().into_iter();
-    let zipped = filter
-        .column_indices()
-        .iter()
-        .zip(fields)
-        .collect::<Vec<_>>();
+trait FromPhysicalExpr {
+    fn to_binary(&self) -> Option<&BinaryExpr>;
+    fn to_column(&self) -> Option<&Column>;
+}
 
-    fn to_binary_expr(expr: &Arc<dyn PhysicalExpr>) -> Option<&BinaryExpr> {
-        expr.as_any().downcast_ref::<BinaryExpr>()
+impl FromPhysicalExpr for dyn PhysicalExpr {
+    fn to_binary(&self) -> Option<&BinaryExpr> { self.as_any().downcast_ref::<BinaryExpr>() }
+    fn to_column(&self) -> Option<&Column> { self.as_any().downcast_ref::<Column>() }
+}
+
+
+#[derive(Debug)]
+struct ColInterval {
+    start: ColumnIndex,
+    end: ColumnIndex
+}
+
+impl ColInterval {
+    fn new(start: ColumnIndex, end: ColumnIndex) -> Self {
+        assert_eq!(start.side, end.side, "both columns must be from the same side");
+        ColInterval { start, end }
     }
 
-    fn parse_leaf(
-        expr: &BinaryExpr,
-    ) -> Option<(&Column, &Column, &datafusion::logical_expr::Operator)> {
-        let l = expr.left().as_any().downcast_ref::<Column>();
-        let r = expr.right().as_any().downcast_ref::<Column>();
-        l.zip(r).map(|(l, r)| (l, r, expr.op()))
+}
+
+fn get_index(c: &Arc<dyn PhysicalExpr>) -> usize {
+    c.to_column()
+        .or(c.as_any().downcast_ref::<CastExpr>().and_then(|c| c.expr().to_column()))
+        .map(|c| c.index())
+        .expect(format!("get {:?} expected Column", c).as_str())
+}
+
+//TODO Add support for datatype, currently expected to be Int64
+fn parse_filter(filter: &JoinFilter) -> Option<(ColInterval, ColInterval)> {
+    let expr = filter.expression().to_binary()?;
+    if matches!(expr.op(), Operator::And) {
+        let left = expr.left().to_binary()?;
+        let right = expr.right().to_binary()?;
+
+        match (left.op(), right.op()) {
+            // assume that LEFT_END >= RIGHT_START in LEFT and LEFT_START <= RIGHT_END in RIGHT
+            (Operator::GtEq, Operator::LtEq) => {
+                Some((
+                    ColInterval::new(
+                        filter.column_indices()[get_index(right.left())].clone(),
+                        filter.column_indices()[get_index(left.left())].clone()
+                    ),
+                    ColInterval::new(
+                        filter.column_indices()[get_index(left.right())].clone(),
+                        filter.column_indices()[get_index(right.right())].clone()
+                    )
+                ))
+            },
+            // assume that LEFT_START <= RIGHT_END in LEFT and LEFT_END >= RIGHT_START in RIGHT
+            (Operator::LtEq, Operator::GtEq) =>
+                Some((
+                    ColInterval::new(
+                        filter.column_indices()[get_index(left.left())].clone(),
+                        filter.column_indices()[get_index(right.left())].clone()
+                    ),
+                    ColInterval::new(
+                        filter.column_indices()[get_index(right.right())].clone(),
+                        filter.column_indices()[get_index(left.right())].clone()
+                    )
+                )),
+            _ => None,
+        }
+    } else {
+        None
     }
-
-    // dbg!(filter);
-
-    let x = to_binary_expr(filter.expression()).and_then(|expr| {
-        let left = to_binary_expr(expr.left()).and_then(parse_leaf);
-        let right = to_binary_expr(expr.right()).and_then(parse_leaf);
-        left.zip(right).map(|((ll, lr, lop), (rl, rr, rop))| {
-            let cols = vec![ll, lr, rl, rr];
-            if (*lop == Operator::GtEq && *rop == Operator::LtEq) {
-                // assume that LEFT_END >= RIGHT_START in LEFT and LEFT_START <= RIGHT_END in RIGHT
-                let left_start = zipped[rl.index()];
-                let left_end = zipped[ll.index()];
-
-                let right_start = zipped[lr.index()];
-                let right_end = zipped[rr.index()];
-
-                ((left_start, left_end), (right_start, right_end))
-            } else if (*lop == Operator::LtEq && *rop == Operator::GtEq) {
-                // assume that LEFT_START <= RIGHT_END in LEFT and LEFT_END >= RIGHT_START in RIGHT
-
-                let left_start = zipped[ll.index()];
-                let left_end = zipped[rl.index()];
-
-                let right_start = zipped[rr.index()];
-                let right_end = zipped[lr.index()];
-
-                ((left_start, left_end), (right_start, right_end))
-            } else {
-                panic!("cannot parse")
-            }
-        })
-    });
-
-    x
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::physical_planner::joins::utils::JoinFilter;
+    use super::*;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::common::JoinSide;
     use datafusion::config::ConfigOptions;
-    use datafusion::logical_expr::Operator;
+    use datafusion::logical_expr::{ExprSchemable, Operator};
     use datafusion::physical_plan::expressions::{BinaryExpr, Column};
     use datafusion::physical_plan::filter::FilterExec;
     use datafusion::physical_plan::PhysicalExpr;
     use datafusion::prelude::*;
     use std::sync::Arc;
+    use datafusion::physical_expr::expressions::CastExpr;
+    use crate::physical_planner::interval_join::parse_filter;
 
     use crate::session_context::SeQuiLaSessionExt;
 
@@ -900,7 +835,7 @@ mod tests {
         let options = ConfigOptions::new();
 
         let config = SessionConfig::from(options)
-            .with_batch_size(2)
+            .with_batch_size(2000)
             .with_target_partitions(1);
 
         let ctx = SessionContext::new_with_sequila(config);
@@ -913,15 +848,22 @@ mod tests {
         let targets = ctx.read_csv(TARGETS_PATH, csv_options).await?;
 
         let reads_renames = vec![
-            col("contig").alias("a1"),
-            col("pos_start").alias("b1"),
-            col("pos_end").alias("c1"),
+            col("contig").alias("reads_contig"),
+            col("pos_end").alias("reads_pos_end"),
+            cast(col("pos_start").alias("reads_pos_start"), DataType::Int64),
         ];
         let target_renames = vec![
-            col("contig").alias("a2"),
-            col("pos_start").alias("b2"),
-            col("pos_end").alias("c2"),
+            col("contig").alias("target_contig"),
+            col("pos_start").alias("target_pos_start"),
+            col("pos_end").alias("target_pos_end"),
         ];
+
+        let on_expr = [
+                col("reads_contig").eq(col("target_contig")),
+                col("reads_pos_start").lt_eq(col("target_pos_end")),
+                // col("c2").gt(col("b1")),
+                col("reads_pos_end").gt_eq(col("target_pos_start")), // col("b2").lt(col("c1"))
+            ];
 
         let res = reads
             .select(reads_renames)?
@@ -929,12 +871,7 @@ mod tests {
                 targets.select(target_renames)?,
                 JoinType::Inner,
                 // a.column2 >= b.column1 AND a.column1 <= b.column2
-                [
-                    col("a1").eq(col("a2")),
-                    col("b1").lt_eq(col("c2")),
-                    // col("c2").gt(col("b1")),
-                    col("c1").gt_eq(col("b2")), // col("b2").lt(col("c1"))
-                ],
+                on_expr,
             )?
             .repartition(datafusion::logical_expr::Partitioning::RoundRobinBatch(1))?;
 
@@ -972,7 +909,7 @@ mod tests {
         let lteq = BinaryExpr::new(
             Arc::new(Column::new(lstart, 0)),
             Operator::LtEq,
-            Arc::new(Column::new(rend, 3)),
+            Arc::new(CastExpr::new(Arc::new(Column::new(rend, 3)), DataType::Int64, None)),
         );
         let expression = BinaryExpr::new(Arc::new(gteq), Operator::And, Arc::new(lteq));
 
@@ -988,6 +925,8 @@ mod tests {
         // who builds it?
         let filter = JoinFilter::new(Arc::new(expression), column_indices, schema);
         println!("{:#?}", filter);
+
+        dbg!(parse_filter(&filter));
 
         let fields = filter.schema().fields().into_iter();
         let zipped = filter
@@ -1038,7 +977,7 @@ mod tests {
             })
         });
 
-        println!("{:#?}", x);
+        // println!("{:#?}", x);
 
         /*
         JoinFilter {
@@ -1125,6 +1064,4 @@ mod tests {
         }
                  */
     }
-
-    fn parse_filter(filter: &JoinFilter) {}
 }
