@@ -3,9 +3,7 @@ use crate::physical_planner::joins::utils::{
 };
 use crate::physical_planner::joins::IntervalSearchJoinExec;
 use ahash::RandomState;
-use arrow::array::{
-    Array, AsArray, PrimitiveArray, RecordBatch, UInt32Array, UInt32BufferBuilder
-};
+use arrow::array::{Array, ArrayRef, AsArray, PrimitiveArray, RecordBatch, UInt32Array, UInt32BufferBuilder};
 use arrow::compute::concat_batches;
 use arrow::datatypes::DataType;
 use arrow::datatypes::{Schema, SchemaRef};
@@ -15,7 +13,7 @@ use datafusion::common::Result;
 use datafusion::common::{internal_err, plan_err, DataFusionError, JoinSide, JoinType, Statistics};
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
-use datafusion::logical_expr::Operator;
+use datafusion::logical_expr::{Operator, UserDefinedLogicalNode};
 use datafusion::physical_expr::equivalence::join_equivalence_properties;
 use datafusion::physical_expr::expressions::{BinaryExpr, CastExpr, Column};
 use datafusion::physical_expr::{
@@ -40,6 +38,7 @@ use std::mem::size_of;
 use std::sync::Arc;
 use std::task::Poll;
 use std::{fmt, thread};
+use datafusion::common::tree_node::{Transformed, TreeNode};
 
 type Metadata = usize;
 
@@ -601,13 +600,11 @@ fn update_hashmap(
         .map(|(i, val)| (i + offset, val))
         .collect::<Vec<_>>();
 
-    let start = batch
-        .column(left_interval.start.index)
-        .as_primitive::<arrow::datatypes::Int64Type>();
+    let start = left_interval.start.evaluate(batch)?.into_array(batch.num_rows())?;
+    let start = start.as_primitive::<arrow::datatypes::Int64Type>();
 
-    let end = batch
-        .column(left_interval.end.index)
-        .as_primitive::<arrow::datatypes::Int64Type>();
+    let end = left_interval.end.evaluate(batch)?.into_array(batch.num_rows())?;
+    let end = end.as_primitive::<arrow::datatypes::Int64Type>();
 
     for i in 0..batch.num_rows() {
         let (position, hash_val) = hash_values_iter[i];
@@ -675,8 +672,11 @@ impl IntervalJoinStream {
                     hashes_buffer.resize(batch.num_rows(), 0);
                     create_hashes(&rights, &self.random_state, &mut hashes_buffer).ok()?;
 
-                    let start = batch.column(self.right_interval.start.index).as_primitive::<arrow::datatypes::Int64Type>();
-                    let end = batch.column(self.right_interval.end.index).as_primitive::<arrow::datatypes::Int64Type>();
+                    let start = self.right_interval.start.evaluate(&batch).ok()?.into_array(batch.num_rows()).ok()?;
+                    let start = start.as_primitive::<arrow::datatypes::Int64Type>();
+
+                    let end = self.right_interval.end.evaluate(&batch).ok()?.into_array(batch.num_rows()).ok()?;
+                    let end = end.as_primitive::<arrow::datatypes::Int64Type>();
 
                     let mut left_builder = UInt32BufferBuilder::new(0);
                     let mut right_builder = UInt32BufferBuilder::new(0);
@@ -735,33 +735,39 @@ impl Stream for IntervalJoinStream {
 trait FromPhysicalExpr {
     fn to_binary(&self) -> Option<&BinaryExpr>;
     fn to_column(&self) -> Option<&Column>;
+    fn to_cast_expr(&self) -> Option<&CastExpr>;
 }
 
 impl FromPhysicalExpr for dyn PhysicalExpr {
     fn to_binary(&self) -> Option<&BinaryExpr> { self.as_any().downcast_ref::<BinaryExpr>() }
     fn to_column(&self) -> Option<&Column> { self.as_any().downcast_ref::<Column>() }
+    fn to_cast_expr(&self) -> Option<&CastExpr> { self.as_any().downcast_ref::<CastExpr>() }
 }
 
 
 #[derive(Debug)]
 struct ColInterval {
-    start: ColumnIndex,
-    end: ColumnIndex
+    start: Arc<dyn PhysicalExpr>,
+    end: Arc<dyn PhysicalExpr>
 }
 
 impl ColInterval {
-    fn new(start: ColumnIndex, end: ColumnIndex) -> Self {
-        assert_eq!(start.side, end.side, "both columns must be from the same side");
+    fn new(start: Arc<dyn PhysicalExpr>, end: Arc<dyn PhysicalExpr>) -> Self {
+        // assert_eq!(start.side, end.side, "both columns must be from the same side");
         ColInterval { start, end }
     }
-
 }
 
-fn get_index(c: &Arc<dyn PhysicalExpr>) -> usize {
-    c.to_column()
-        .or(c.as_any().downcast_ref::<CastExpr>().and_then(|c| c.expr().to_column()))
-        .map(|c| c.index())
-        .expect(format!("get {:?} expected Column", c).as_str())
+fn get_with_source_index(node: &Arc<dyn PhysicalExpr>, indices: &[ColumnIndex]) -> Arc<dyn PhysicalExpr> {
+    node.clone().transform_up(&|node| {
+        if let Some(column) = node.to_column() {
+            let new_column = Column::new(column.name(), indices[column.index()].index);
+            let result = Arc::new(new_column) as Arc<dyn PhysicalExpr>;
+            Ok(Transformed::Yes(result))
+        } else {
+            Ok(Transformed::No(node))
+        }
+    }).unwrap()
 }
 
 //TODO Add support for datatype, currently expected to be Int64
@@ -771,32 +777,36 @@ fn parse_filter(filter: &JoinFilter) -> Option<(ColInterval, ColInterval)> {
         let left = expr.left().to_binary()?;
         let right = expr.right().to_binary()?;
 
+        let indices = filter.column_indices();
+
         match (left.op(), right.op()) {
             // assume that LEFT_END >= RIGHT_START in LEFT and LEFT_START <= RIGHT_END in RIGHT
             (Operator::GtEq, Operator::LtEq) => {
                 Some((
                     ColInterval::new(
-                        filter.column_indices()[get_index(right.left())].clone(),
-                        filter.column_indices()[get_index(left.left())].clone()
+                        get_with_source_index(right.left(), indices),
+                        get_with_source_index(left.left(), indices),
                     ),
                     ColInterval::new(
-                        filter.column_indices()[get_index(left.right())].clone(),
-                        filter.column_indices()[get_index(right.right())].clone()
+                        get_with_source_index(left.right(), indices),
+                        get_with_source_index(right.right(), indices),
                     )
                 ))
             },
             // assume that LEFT_START <= RIGHT_END in LEFT and LEFT_END >= RIGHT_START in RIGHT
-            (Operator::LtEq, Operator::GtEq) =>
+            (Operator::LtEq, Operator::GtEq) => {
+
                 Some((
                     ColInterval::new(
-                        filter.column_indices()[get_index(left.left())].clone(),
-                        filter.column_indices()[get_index(right.left())].clone()
+                        get_with_source_index(left.left(), indices),
+                        get_with_source_index(right.left(), indices),
                     ),
                     ColInterval::new(
-                        filter.column_indices()[get_index(right.right())].clone(),
-                        filter.column_indices()[get_index(left.right())].clone()
+                        get_with_source_index(right.right(), indices),
+                        get_with_source_index(left.right(), indices),
                     )
-                )),
+                ))
+            },
             _ => None,
         }
     } else {
@@ -816,6 +826,7 @@ mod tests {
     use datafusion::physical_plan::PhysicalExpr;
     use datafusion::prelude::*;
     use std::sync::Arc;
+    use datafusion::assert_batches_sorted_eq;
     use datafusion::physical_expr::expressions::CastExpr;
     use crate::physical_planner::interval_join::parse_filter;
 
@@ -828,7 +839,7 @@ mod tests {
     async fn init() -> datafusion::common::Result<()> {
         let schema = Schema::new(vec![
             Field::new("contig", DataType::Utf8, false),
-            Field::new("pos_start", DataType::Int64, false),
+            Field::new("pos_start", DataType::Int32, false),
             Field::new("pos_end", DataType::Int64, false),
         ]);
 
@@ -849,8 +860,9 @@ mod tests {
 
         let reads_renames = vec![
             col("contig").alias("reads_contig"),
+            col("pos_start").alias("reads_pos_start"),
             col("pos_end").alias("reads_pos_end"),
-            cast(col("pos_start").alias("reads_pos_start"), DataType::Int64),
+            // cast(col("pos_start").alias("reads_pos_start"), DataType::Int64),
         ];
         let target_renames = vec![
             col("contig").alias("target_contig"),
@@ -883,13 +895,37 @@ mod tests {
         // println!("\n------------------------\n");
         // println!("b={}", res.clone().collect().await?.len());
         // println!("---");
-        res.show().await?;
+        res.clone().show().await?;
 
         // select * from targets
         // join reads on
         // targets.contig = reads.contig
         // and targets.pos_start >= reads.pos_start
         // and targets.pos_end <= reads.pos_end;
+        let expected = [
+            "+--------------+-----------------+---------------+---------------+------------------+----------------+",
+            "| reads_contig | reads_pos_start | reads_pos_end | target_contig | target_pos_start | target_pos_end |",
+            "+--------------+-----------------+---------------+---------------+------------------+----------------+",
+            "| chr1         | 150             | 250           | chr1          | 100              | 190            |",
+            "| chr1         | 190             | 300           | chr1          | 100              | 190            |",
+            "| chr1         | 150             | 250           | chr1          | 200              | 290            |",
+            "| chr1         | 190             | 300           | chr1          | 200              | 290            |",
+            "| chr1         | 300             | 501           | chr1          | 400              | 600            |",
+            "| chr1         | 500             | 700           | chr1          | 400              | 600            |",
+            "| chr1         | 15000           | 15000         | chr1          | 10000            | 20000          |",
+            "| chr1         | 22000           | 22300         | chr1          | 22100            | 22100          |",
+            "| chr2         | 150             | 250           | chr2          | 100              | 190            |",
+            "| chr2         | 190             | 300           | chr2          | 100              | 190            |",
+            "| chr2         | 150             | 250           | chr2          | 200              | 290            |",
+            "| chr2         | 190             | 300           | chr2          | 200              | 290            |",
+            "| chr2         | 300             | 500           | chr2          | 400              | 600            |",
+            "| chr2         | 500             | 700           | chr2          | 400              | 600            |",
+            "| chr2         | 15000           | 15000         | chr2          | 10000            | 20000          |",
+            "| chr2         | 22000           | 22300         | chr2          | 22100            | 22100          |",
+            "+--------------+-----------------+---------------+---------------+------------------+----------------+",
+        ];
+
+        assert_batches_sorted_eq!(expected, &res.clone().collect().await?);
 
         Ok(())
     }
