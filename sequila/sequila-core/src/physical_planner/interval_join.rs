@@ -1,7 +1,6 @@
 use crate::physical_planner::joins::utils::{
-    estimate_join_statistics, BuildProbeJoinMetrics, JoinHashMapType, OnceAsync, OnceFut,
+    estimate_join_statistics, BuildProbeJoinMetrics, OnceAsync, OnceFut,
 };
-use crate::physical_planner::joins::IntervalSearchJoinExec;
 use ahash::RandomState;
 use arrow::array::{Array, ArrayRef, AsArray, PrimitiveArray, RecordBatch, UInt32Array, UInt32BufferBuilder};
 use arrow::compute::concat_batches;
@@ -369,7 +368,7 @@ impl ExecutionPlan for IntervalJoinExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(IntervalSearchJoinExec::try_new(
+        Ok(Arc::new(IntervalJoinExec::try_new(
             children[0].clone(),
             children[1].clone(),
             self.on.clone(),

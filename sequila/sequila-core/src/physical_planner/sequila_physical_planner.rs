@@ -1,5 +1,4 @@
 use crate::physical_planner::interval_join::IntervalJoinExec;
-use crate::physical_planner::joins::IntervalSearchJoinExec;
 use async_trait::async_trait;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::DFSchema;
