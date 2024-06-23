@@ -2,31 +2,38 @@ use crate::physical_planner::joins::utils::{
     estimate_join_statistics, BuildProbeJoinMetrics, OnceAsync, OnceFut,
 };
 use ahash::RandomState;
-use arrow::array::{Array, ArrayRef, AsArray, PrimitiveArray, RecordBatch, UInt32Array, UInt32BufferBuilder};
+use arrow::array::{
+    Array, ArrayRef, AsArray, PrimitiveArray, RecordBatch, UInt32Array, UInt32BufferBuilder,
+};
 use arrow::compute::concat_batches;
 use arrow::datatypes::DataType;
 use arrow::datatypes::{Schema, SchemaRef};
 use coitrees::*;
 use datafusion::common::hash_utils::create_hashes;
-use datafusion::common::{project_schema, Result};
+use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::{internal_err, plan_err, DataFusionError, JoinSide, JoinType, Statistics};
+use datafusion::common::{project_schema, Result};
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
 use datafusion::logical_expr::{Operator, UserDefinedLogicalNode};
 use datafusion::physical_expr::equivalence::{join_equivalence_properties, ProjectionMapping};
 use datafusion::physical_expr::expressions::{BinaryExpr, CastExpr, Column, UnKnownColumn};
-use datafusion::physical_expr::{Distribution, EquivalenceProperties, Partitioning, PhysicalExpr, PhysicalExprRef, PhysicalSortExpr};
+use datafusion::physical_expr::{
+    Distribution, EquivalenceProperties, Partitioning, PhysicalExpr, PhysicalExprRef,
+    PhysicalSortExpr,
+};
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-use datafusion::physical_plan::{ExecutionMode, ExecutionPlanProperties};
-use datafusion::physical_plan::joins::utils::{adjust_right_output_partitioning, JoinOnRef};
+use datafusion::physical_plan::common::can_project;
 use datafusion::physical_plan::joins::utils::calculate_join_output_ordering;
 use datafusion::physical_plan::joins::utils::check_join_is_valid;
 use datafusion::physical_plan::joins::utils::partitioned_join_output_partitioning;
+use datafusion::physical_plan::joins::utils::{adjust_right_output_partitioning, JoinOnRef};
 use datafusion::physical_plan::joins::utils::{build_join_schema, JoinOn};
 use datafusion::physical_plan::joins::utils::{ColumnIndex, JoinFilter};
 use datafusion::physical_plan::joins::PartitionMode;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
+use datafusion::physical_plan::{ExecutionMode, ExecutionPlanProperties};
 use fnv::FnvHashMap;
 use futures::{ready, Stream, StreamExt, TryStreamExt};
 use log::info;
@@ -36,8 +43,6 @@ use std::mem::size_of;
 use std::sync::Arc;
 use std::task::Poll;
 use std::{fmt, thread};
-use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
-use datafusion::physical_plan::common::can_project;
 
 type Metadata = usize;
 
@@ -179,7 +184,7 @@ impl IntervalJoinExec {
             projection,
             column_indices,
             null_equals_null,
-            cache
+            cache,
         })
     }
 
@@ -288,19 +293,13 @@ impl IntervalJoinExec {
         let left_columns_len = left.schema().fields.len();
         let mut output_partitioning = match mode {
             PartitionMode::CollectLeft => match join_type {
-                JoinType::Inner | JoinType::Right => adjust_right_output_partitioning(
-                    right.output_partitioning(),
-                    left_columns_len,
-                ),
-                JoinType::RightSemi | JoinType::RightAnti => {
-                    right.output_partitioning().clone()
+                JoinType::Inner | JoinType::Right => {
+                    adjust_right_output_partitioning(right.output_partitioning(), left_columns_len)
                 }
-                JoinType::Left
-                | JoinType::LeftSemi
-                | JoinType::LeftAnti
-                | JoinType::Full => Partitioning::UnknownPartitioning(
-                    right.output_partitioning().partition_count(),
-                ),
+                JoinType::RightSemi | JoinType::RightAnti => right.output_partitioning().clone(),
+                JoinType::Left | JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Full => {
+                    Partitioning::UnknownPartitioning(right.output_partitioning().partition_count())
+                }
             },
             PartitionMode::Partitioned => partitioned_join_output_partitioning(
                 join_type,
@@ -308,9 +307,9 @@ impl IntervalJoinExec {
                 right.output_partitioning(),
                 left_columns_len,
             ),
-            PartitionMode::Auto => Partitioning::UnknownPartitioning(
-                right.output_partitioning().partition_count(),
-            ),
+            PartitionMode::Auto => {
+                Partitioning::UnknownPartitioning(right.output_partitioning().partition_count())
+            }
         };
 
         // Determine execution mode by checking whether this join is pipeline
@@ -318,12 +317,9 @@ impl IntervalJoinExec {
         // side is unbounded with `Left`, `Full`, `LeftAnti` or `LeftSemi` join types.
         let pipeline_breaking = left.execution_mode().is_unbounded()
             || (right.execution_mode().is_unbounded()
-            && matches!(
+                && matches!(
                     join_type,
-                    JoinType::Left
-                        | JoinType::Full
-                        | JoinType::LeftAnti
-                        | JoinType::LeftSemi
+                    JoinType::Left | JoinType::Full | JoinType::LeftAnti | JoinType::LeftSemi
                 ));
 
         let mode = if pipeline_breaking {
@@ -336,8 +332,7 @@ impl IntervalJoinExec {
         if let Some(projection) = projection {
             let projection_exprs = project_index_to_exprs(projection, &schema);
             // construct a map from the input expressions to the output expression of the Projection
-            let projection_mapping =
-                ProjectionMapping::try_new(&projection_exprs, &schema)?;
+            let projection_mapping = ProjectionMapping::try_new(&projection_exprs, &schema)?;
             let out_schema = project_schema(&schema, Some(projection))?;
             if let Partitioning::Hash(exprs, part) = output_partitioning {
                 let normalized_exprs = exprs
@@ -345,9 +340,7 @@ impl IntervalJoinExec {
                     .map(|expr| {
                         eq_properties
                             .project_expr(expr, &projection_mapping)
-                            .unwrap_or_else(|| {
-                                Arc::new(UnKnownColumn::new(&expr.to_string()))
-                            })
+                            .unwrap_or_else(|| Arc::new(UnKnownColumn::new(&expr.to_string())))
                     })
                     .collect();
                 output_partitioning = Partitioning::Hash(normalized_exprs, part);
@@ -371,10 +364,7 @@ fn project_index_to_exprs(
         .map(|index| {
             let field = schema.field(*index);
             (
-                Arc::new(Column::new(
-                    field.name(),
-                    *index,
-                )) as Arc<dyn PhysicalExpr>,
+                Arc::new(Column::new(field.name(), *index)) as Arc<dyn PhysicalExpr>,
                 field.name().to_owned(),
             )
         })
@@ -497,7 +487,9 @@ impl ExecutionPlan for IntervalJoinExec {
             );
         }
 
-        let (left_interval, right_interval) = self.filter().and_then(parse_filter)
+        let (left_interval, right_interval) = self
+            .filter()
+            .and_then(parse_filter)
             .expect(format!("couldn't parse {:?}", self.filter()).as_str());
 
         let join_metrics = BuildProbeJoinMetrics::new(partition, &self.metrics);
@@ -528,7 +520,7 @@ impl ExecutionPlan for IntervalJoinExec {
                     context.clone(),
                     join_metrics.clone(),
                     reservation,
-                    left_interval
+                    left_interval,
                 ))
             }
             PartitionMode::Auto => {
@@ -600,7 +592,7 @@ async fn collect_left_input(
     context: Arc<TaskContext>,
     metrics: BuildProbeJoinMetrics,
     reservation: MemoryReservation,
-    left_interval: ColInterval
+    left_interval: ColInterval,
 ) -> datafusion::common::Result<JoinLeftData> {
     let schema = left.schema();
 
@@ -711,10 +703,16 @@ fn update_hashmap(
         .map(|(i, val)| (i + offset, val))
         .collect::<Vec<_>>();
 
-    let start = left_interval.start.evaluate(batch)?.into_array(batch.num_rows())?;
+    let start = left_interval
+        .start
+        .evaluate(batch)?
+        .into_array(batch.num_rows())?;
     let start = start.as_primitive::<arrow::datatypes::Int64Type>();
 
-    let end = left_interval.end.evaluate(batch)?.into_array(batch.num_rows())?;
+    let end = left_interval
+        .end
+        .evaluate(batch)?
+        .into_array(batch.num_rows())?;
     let end = end.as_primitive::<arrow::datatypes::Int64Type>();
 
     for i in 0..batch.num_rows() {
@@ -783,10 +781,22 @@ impl IntervalJoinStream {
                     hashes_buffer.resize(batch.num_rows(), 0);
                     create_hashes(&rights, &self.random_state, &mut hashes_buffer).ok()?;
 
-                    let start = self.right_interval.start.evaluate(&batch).ok()?.into_array(batch.num_rows()).ok()?;
+                    let start = self
+                        .right_interval
+                        .start
+                        .evaluate(&batch)
+                        .ok()?
+                        .into_array(batch.num_rows())
+                        .ok()?;
                     let start = start.as_primitive::<arrow::datatypes::Int64Type>();
 
-                    let end = self.right_interval.end.evaluate(&batch).ok()?.into_array(batch.num_rows()).ok()?;
+                    let end = self
+                        .right_interval
+                        .end
+                        .evaluate(&batch)
+                        .ok()?
+                        .into_array(batch.num_rows())
+                        .ok()?;
                     let end = end.as_primitive::<arrow::datatypes::Int64Type>();
 
                     let mut left_builder = UInt32BufferBuilder::new(0);
@@ -850,16 +860,21 @@ trait FromPhysicalExpr {
 }
 
 impl FromPhysicalExpr for dyn PhysicalExpr {
-    fn to_binary(&self) -> Option<&BinaryExpr> { self.as_any().downcast_ref::<BinaryExpr>() }
-    fn to_column(&self) -> Option<&Column> { self.as_any().downcast_ref::<Column>() }
-    fn to_cast_expr(&self) -> Option<&CastExpr> { self.as_any().downcast_ref::<CastExpr>() }
+    fn to_binary(&self) -> Option<&BinaryExpr> {
+        self.as_any().downcast_ref::<BinaryExpr>()
+    }
+    fn to_column(&self) -> Option<&Column> {
+        self.as_any().downcast_ref::<Column>()
+    }
+    fn to_cast_expr(&self) -> Option<&CastExpr> {
+        self.as_any().downcast_ref::<CastExpr>()
+    }
 }
 
-
 #[derive(Debug)]
-struct ColInterval {
+pub struct ColInterval {
     start: Arc<dyn PhysicalExpr>,
-    end: Arc<dyn PhysicalExpr>
+    end: Arc<dyn PhysicalExpr>,
 }
 
 impl ColInterval {
@@ -869,20 +884,26 @@ impl ColInterval {
     }
 }
 
-fn get_with_source_index(node: &Arc<dyn PhysicalExpr>, indices: &[ColumnIndex]) -> Arc<dyn PhysicalExpr> {
-    node.clone().transform_up(|node| {
-        if let Some(column) = node.to_column() {
-            let new_column = Column::new(column.name(), indices[column.index()].index);
-            let result = Arc::new(new_column) as Arc<dyn PhysicalExpr>;
-            Ok(Transformed::yes(result))
-        } else {
-            Ok(Transformed::no(node))
-        }
-    }).data().unwrap()
+fn get_with_source_index(
+    node: &Arc<dyn PhysicalExpr>,
+    indices: &[ColumnIndex],
+) -> Arc<dyn PhysicalExpr> {
+    node.clone()
+        .transform_up(|node| {
+            if let Some(column) = node.to_column() {
+                let new_column = Column::new(column.name(), indices[column.index()].index);
+                let result = Arc::new(new_column) as Arc<dyn PhysicalExpr>;
+                Ok(Transformed::yes(result))
+            } else {
+                Ok(Transformed::no(node))
+            }
+        })
+        .data()
+        .unwrap()
 }
 
 //TODO Add support for datatype, currently expected to be Int64
-fn parse_filter(filter: &JoinFilter) -> Option<(ColInterval, ColInterval)> {
+pub(crate) fn parse_filter(filter: &JoinFilter) -> Option<(ColInterval, ColInterval)> {
     let expr = filter.expression().to_binary()?;
     if matches!(expr.op(), Operator::And) {
         let left = expr.left().to_binary()?;
@@ -892,32 +913,27 @@ fn parse_filter(filter: &JoinFilter) -> Option<(ColInterval, ColInterval)> {
 
         match (left.op(), right.op()) {
             // assume that LEFT_END >= RIGHT_START in LEFT and LEFT_START <= RIGHT_END in RIGHT
-            (Operator::GtEq, Operator::LtEq) => {
-                Some((
-                    ColInterval::new(
-                        get_with_source_index(right.left(), indices),
-                        get_with_source_index(left.left(), indices),
-                    ),
-                    ColInterval::new(
-                        get_with_source_index(left.right(), indices),
-                        get_with_source_index(right.right(), indices),
-                    )
-                ))
-            },
+            (Operator::GtEq, Operator::LtEq) => Some((
+                ColInterval::new(
+                    get_with_source_index(right.left(), indices),
+                    get_with_source_index(left.left(), indices),
+                ),
+                ColInterval::new(
+                    get_with_source_index(left.right(), indices),
+                    get_with_source_index(right.right(), indices),
+                ),
+            )),
             // assume that LEFT_START <= RIGHT_END in LEFT and LEFT_END >= RIGHT_START in RIGHT
-            (Operator::LtEq, Operator::GtEq) => {
-
-                Some((
-                    ColInterval::new(
-                        get_with_source_index(left.left(), indices),
-                        get_with_source_index(right.left(), indices),
-                    ),
-                    ColInterval::new(
-                        get_with_source_index(right.right(), indices),
-                        get_with_source_index(left.right(), indices),
-                    )
-                ))
-            },
+            (Operator::LtEq, Operator::GtEq) => Some((
+                ColInterval::new(
+                    get_with_source_index(left.left(), indices),
+                    get_with_source_index(right.left(), indices),
+                ),
+                ColInterval::new(
+                    get_with_source_index(right.right(), indices),
+                    get_with_source_index(left.right(), indices),
+                ),
+            )),
             _ => None,
         }
     } else {
@@ -928,18 +944,18 @@ fn parse_filter(filter: &JoinFilter) -> Option<(ColInterval, ColInterval)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::physical_planner::interval_join::parse_filter;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::assert_batches_sorted_eq;
     use datafusion::common::JoinSide;
     use datafusion::config::ConfigOptions;
     use datafusion::logical_expr::{ExprSchemable, Operator};
+    use datafusion::physical_expr::expressions::CastExpr;
     use datafusion::physical_plan::expressions::{BinaryExpr, Column};
     use datafusion::physical_plan::filter::FilterExec;
     use datafusion::physical_plan::PhysicalExpr;
     use datafusion::prelude::*;
     use std::sync::Arc;
-    use datafusion::assert_batches_sorted_eq;
-    use datafusion::physical_expr::expressions::CastExpr;
-    use crate::physical_planner::interval_join::parse_filter;
 
     use crate::session_context::SeQuiLaSessionExt;
 
@@ -982,11 +998,11 @@ mod tests {
         ];
 
         let on_expr = [
-                col("reads_contig").eq(col("target_contig")),
-                col("reads_pos_start").lt_eq(col("target_pos_end")),
-                // col("c2").gt(col("b1")),
-                col("reads_pos_end").gt_eq(col("target_pos_start")), // col("b2").lt(col("c1"))
-            ];
+            col("reads_contig").eq(col("target_contig")),
+            col("reads_pos_start").lt_eq(col("target_pos_end")),
+            // col("c2").gt(col("b1")),
+            col("reads_pos_end").gt_eq(col("target_pos_start")), // col("b2").lt(col("c1"))
+        ];
 
         let res = reads
             .select(reads_renames)?
@@ -1056,7 +1072,11 @@ mod tests {
         let lteq = BinaryExpr::new(
             Arc::new(Column::new(lstart, 0)),
             Operator::LtEq,
-            Arc::new(CastExpr::new(Arc::new(Column::new(rend, 3)), DataType::Int64, None)),
+            Arc::new(CastExpr::new(
+                Arc::new(Column::new(rend, 3)),
+                DataType::Int64,
+                None,
+            )),
         );
         let expression = BinaryExpr::new(Arc::new(gteq), Operator::And, Arc::new(lteq));
 
@@ -1071,7 +1091,6 @@ mod tests {
 
         // who builds it?
         let filter = JoinFilter::new(Arc::new(expression), column_indices, schema);
-        println!("{:#?}", filter);
 
         dbg!(parse_filter(&filter));
 

@@ -36,9 +36,11 @@ use arrow::compute;
 use arrow::datatypes::{ArrowNativeType, Field, Schema, SchemaBuilder};
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use datafusion::physical_plan::joins::utils::{ColumnIndex, JoinOn};
-use datafusion::physical_plan::ExecutionPlanProperties;
 use datafusion::physical_plan::metrics::{self, ExecutionPlanMetricsSet, MetricBuilder};
-use datafusion::physical_plan::{ColumnStatistics, ExecutionMode, ExecutionPlan, Partitioning, Statistics};
+use datafusion::physical_plan::ExecutionPlanProperties;
+use datafusion::physical_plan::{
+    ColumnStatistics, ExecutionMode, ExecutionPlan, Partitioning, Statistics,
+};
 //use arrow::buffer::ArrowNativeType;
 use datafusion::common::cast::as_boolean_array;
 use datafusion::common::stats::Precision;
@@ -184,8 +186,7 @@ pub fn execution_mode_from_children<'a>(
     let mut result = ExecutionMode::Bounded;
     for mode in children.into_iter().map(|child| child.execution_mode()) {
         match (mode, result) {
-            (ExecutionMode::PipelineBreaking, _)
-            | (_, ExecutionMode::PipelineBreaking) => {
+            (ExecutionMode::PipelineBreaking, _) | (_, ExecutionMode::PipelineBreaking) => {
                 // If any of the modes is `PipelineBreaking`, so is the result:
                 return ExecutionMode::PipelineBreaking;
             }
