@@ -35,9 +35,10 @@ use arrow::array::{ArrowPrimitiveType, NativeAdapter, PrimitiveArray};
 use arrow::compute;
 use arrow::datatypes::{ArrowNativeType, Field, Schema, SchemaBuilder};
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
-use datafusion::physical_plan::joins::utils::ColumnIndex;
+use datafusion::physical_plan::joins::utils::{ColumnIndex, JoinOn};
+use datafusion::physical_plan::ExecutionPlanProperties;
 use datafusion::physical_plan::metrics::{self, ExecutionPlanMetricsSet, MetricBuilder};
-use datafusion::physical_plan::{ColumnStatistics, ExecutionPlan, Partitioning, Statistics};
+use datafusion::physical_plan::{ColumnStatistics, ExecutionMode, ExecutionPlan, Partitioning, Statistics};
 //use arrow::buffer::ArrowNativeType;
 use datafusion::common::cast::as_boolean_array;
 use datafusion::common::stats::Precision;
@@ -174,6 +175,31 @@ impl JoinHashMap {
             next: vec![0; capacity],
         }
     }
+}
+
+/// Conservatively "combines" execution modes of a given collection of operators.
+pub fn execution_mode_from_children<'a>(
+    children: impl IntoIterator<Item = &'a Arc<dyn ExecutionPlan>>,
+) -> ExecutionMode {
+    let mut result = ExecutionMode::Bounded;
+    for mode in children.into_iter().map(|child| child.execution_mode()) {
+        match (mode, result) {
+            (ExecutionMode::PipelineBreaking, _)
+            | (_, ExecutionMode::PipelineBreaking) => {
+                // If any of the modes is `PipelineBreaking`, so is the result:
+                return ExecutionMode::PipelineBreaking;
+            }
+            (ExecutionMode::Unbounded, _) | (_, ExecutionMode::Unbounded) => {
+                // Unbounded mode eats up bounded mode:
+                result = ExecutionMode::Unbounded;
+            }
+            (ExecutionMode::Bounded, ExecutionMode::Bounded) => {
+                // When both modes are bounded, so is the result:
+                result = ExecutionMode::Bounded;
+            }
+        }
+    }
+    result
 }
 
 // Type of offsets for obtaining indices from JoinHashMap.
@@ -404,8 +430,6 @@ impl JoinHashMapType for JoinHashMap {
     }
 }
 
-/// The on clause of the join, as vector of (left, right) columns.
-pub type JoinOn = Vec<(Column, Column)>;
 /// Reference for JoinOn.
 pub type JoinOnRef<'a> = &'a [(Column, Column)];
 

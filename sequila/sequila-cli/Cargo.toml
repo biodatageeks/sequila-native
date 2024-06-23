@@ -19,4 +19,4 @@ tokio.workspace = true
 log.workspace = true
 env_logger.workspace = true
 emojis.workspace = true
-exon = "0.9.3"
+#exon = "0.9.3"

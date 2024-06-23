@@ -20,6 +20,7 @@ async fn main() -> Result<()> {
         format: datafusion_cli::print_format::PrintFormat::Table,
         quiet: false,
         maxrows: datafusion_cli::print_options::MaxRows::Limited(100),
+        color: true,
     };
     exec::exec_from_repl(&mut ctx, &mut print_options)
         .await

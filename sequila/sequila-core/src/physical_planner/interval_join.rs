@@ -8,18 +8,17 @@ use arrow::datatypes::DataType;
 use arrow::datatypes::{Schema, SchemaRef};
 use coitrees::*;
 use datafusion::common::hash_utils::create_hashes;
-use datafusion::common::Result;
+use datafusion::common::{project_schema, Result};
 use datafusion::common::{internal_err, plan_err, DataFusionError, JoinSide, JoinType, Statistics};
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
 use datafusion::logical_expr::{Operator, UserDefinedLogicalNode};
-use datafusion::physical_expr::equivalence::join_equivalence_properties;
-use datafusion::physical_expr::expressions::{BinaryExpr, CastExpr, Column};
-use datafusion::physical_expr::{
-    Distribution, EquivalenceProperties, Partitioning, PhysicalExpr, PhysicalSortExpr,
-};
+use datafusion::physical_expr::equivalence::{join_equivalence_properties, ProjectionMapping};
+use datafusion::physical_expr::expressions::{BinaryExpr, CastExpr, Column, UnKnownColumn};
+use datafusion::physical_expr::{Distribution, EquivalenceProperties, Partitioning, PhysicalExpr, PhysicalExprRef, PhysicalSortExpr};
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-use datafusion::physical_plan::joins::utils::adjust_right_output_partitioning;
+use datafusion::physical_plan::{ExecutionMode, ExecutionPlanProperties};
+use datafusion::physical_plan::joins::utils::{adjust_right_output_partitioning, JoinOnRef};
 use datafusion::physical_plan::joins::utils::calculate_join_output_ordering;
 use datafusion::physical_plan::joins::utils::check_join_is_valid;
 use datafusion::physical_plan::joins::utils::partitioned_join_output_partitioning;
@@ -27,7 +26,7 @@ use datafusion::physical_plan::joins::utils::{build_join_schema, JoinOn};
 use datafusion::physical_plan::joins::utils::{ColumnIndex, JoinFilter};
 use datafusion::physical_plan::joins::PartitionMode;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan};
+use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use fnv::FnvHashMap;
 use futures::{ready, Stream, StreamExt, TryStreamExt};
 use log::info;
@@ -37,7 +36,8 @@ use std::mem::size_of;
 use std::sync::Arc;
 use std::task::Poll;
 use std::{fmt, thread};
-use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
+use datafusion::physical_plan::common::can_project;
 
 type Metadata = usize;
 
@@ -98,23 +98,23 @@ pub struct IntervalJoinExec {
     /// right (probe) side which are filtered by the hash table
     pub right: Arc<dyn ExecutionPlan>,
     /// Set of equijoin columns from the relations: `(left_col, right_col)`
-    pub on: Vec<(Column, Column)>,
+    pub on: Vec<(PhysicalExprRef, PhysicalExprRef)>,
     /// Filters which are applied while finding matching rows
     pub filter: Option<JoinFilter>,
     /// How the join is performed (`OUTER`, `INNER`, etc)
     pub join_type: JoinType,
     /// The output schema for the join
-    schema: SchemaRef,
+    join_schema: SchemaRef,
     /// Future that consumes left input and builds the hash table
     left_fut: OnceAsync<JoinLeftData>,
     /// Shared the `RandomState` for the hashing algorithm
     random_state: RandomState,
-    /// Output order
-    output_order: Option<Vec<PhysicalSortExpr>>,
     /// Partitioning mode to use
     pub mode: PartitionMode,
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
+    /// The projection indices of the columns in the output schema of join
+    pub projection: Option<Vec<usize>>,
     /// Information of index and left / right placement of columns
     column_indices: Vec<ColumnIndex>,
     /// Null matching behavior: If `null_equals_null` is true, rows that have
@@ -122,6 +122,8 @@ pub struct IntervalJoinExec {
     /// Otherwise, rows that have `null`s in the join columns will not be
     /// matched and thus will not appear in the output.
     pub null_equals_null: bool,
+
+    cache: PlanProperties,
 }
 
 impl IntervalJoinExec {
@@ -131,6 +133,7 @@ impl IntervalJoinExec {
         on: JoinOn,
         filter: Option<JoinFilter>,
         join_type: &JoinType,
+        projection: Option<Vec<usize>>,
         partition_mode: PartitionMode,
         null_equals_null: bool,
     ) -> datafusion::common::Result<Self> {
@@ -142,19 +145,25 @@ impl IntervalJoinExec {
 
         check_join_is_valid(&left_schema, &right_schema, &on)?;
 
-        let (schema, column_indices) = build_join_schema(&left_schema, &right_schema, join_type);
+        let (join_schema, column_indices) =
+            build_join_schema(&left_schema, &right_schema, join_type);
 
         let random_state = RandomState::with_seeds(0, 0, 0, 0);
 
-        let output_order = calculate_join_output_ordering(
-            left.output_ordering().unwrap_or(&[]),
-            right.output_ordering().unwrap_or(&[]),
+        let join_schema = Arc::new(join_schema);
+
+        //  check if the projection is valid
+        can_project(&join_schema, projection.as_ref())?;
+
+        let cache = Self::compute_properties(
+            &left,
+            &right,
+            join_schema.clone(),
             *join_type,
             &on,
-            left_schema.fields.len(),
-            &Self::maintains_input_order(*join_type),
-            Some(Self::probe_side()),
-        );
+            partition_mode,
+            projection.as_ref(),
+        )?;
 
         Ok(IntervalJoinExec {
             left,
@@ -162,14 +171,15 @@ impl IntervalJoinExec {
             on,
             filter,
             join_type: *join_type,
-            schema: Arc::new(schema),
+            join_schema: join_schema,
             left_fut: Default::default(),
             random_state,
             mode: partition_mode,
             metrics: ExecutionPlanMetricsSet::new(),
+            projection,
             column_indices,
             null_equals_null,
-            output_order,
+            cache
         })
     }
 
@@ -184,7 +194,7 @@ impl IntervalJoinExec {
     }
 
     /// Set of common columns used to join on
-    pub fn on(&self) -> &[(Column, Column)] {
+    pub fn on(&self) -> &[(PhysicalExprRef, PhysicalExprRef)] {
         &self.on
     }
 
@@ -224,7 +234,153 @@ impl IntervalJoinExec {
         // In current implementation right side is always probe side.
         JoinSide::Right
     }
+
+    /// Return whether the join contains a projection
+    pub fn contain_projection(&self) -> bool {
+        self.projection.is_some()
+    }
+
+    /// Return new instance of [HashJoinExec] with the given projection.
+    pub fn with_projection(&self, projection: Option<Vec<usize>>) -> Result<Self> {
+        //  check if the projection is valid
+        can_project(&self.schema(), projection.as_ref())?;
+        let projection = match projection {
+            Some(projection) => match &self.projection {
+                Some(p) => Some(projection.iter().map(|i| p[*i]).collect()),
+                None => Some(projection),
+            },
+            None => None,
+        };
+        Self::try_new(
+            self.left.clone(),
+            self.right.clone(),
+            self.on.clone(),
+            self.filter.clone(),
+            &self.join_type,
+            projection,
+            self.mode,
+            self.null_equals_null,
+        )
+    }
+
+    /// This function creates the cache object that stores the plan properties such as schema, equivalence properties, ordering, partitioning, etc.
+    fn compute_properties(
+        left: &Arc<dyn ExecutionPlan>,
+        right: &Arc<dyn ExecutionPlan>,
+        schema: SchemaRef,
+        join_type: JoinType,
+        on: JoinOnRef,
+        mode: PartitionMode,
+        projection: Option<&Vec<usize>>,
+    ) -> Result<PlanProperties> {
+        // Calculate equivalence properties:
+        let mut eq_properties = join_equivalence_properties(
+            left.equivalence_properties().clone(),
+            right.equivalence_properties().clone(),
+            &join_type,
+            schema.clone(),
+            &Self::maintains_input_order(join_type),
+            Some(Self::probe_side()),
+            on,
+        );
+
+        // Get output partitioning:
+        let left_columns_len = left.schema().fields.len();
+        let mut output_partitioning = match mode {
+            PartitionMode::CollectLeft => match join_type {
+                JoinType::Inner | JoinType::Right => adjust_right_output_partitioning(
+                    right.output_partitioning(),
+                    left_columns_len,
+                ),
+                JoinType::RightSemi | JoinType::RightAnti => {
+                    right.output_partitioning().clone()
+                }
+                JoinType::Left
+                | JoinType::LeftSemi
+                | JoinType::LeftAnti
+                | JoinType::Full => Partitioning::UnknownPartitioning(
+                    right.output_partitioning().partition_count(),
+                ),
+            },
+            PartitionMode::Partitioned => partitioned_join_output_partitioning(
+                join_type,
+                left.output_partitioning(),
+                right.output_partitioning(),
+                left_columns_len,
+            ),
+            PartitionMode::Auto => Partitioning::UnknownPartitioning(
+                right.output_partitioning().partition_count(),
+            ),
+        };
+
+        // Determine execution mode by checking whether this join is pipeline
+        // breaking. This happens when the left side is unbounded, or the right
+        // side is unbounded with `Left`, `Full`, `LeftAnti` or `LeftSemi` join types.
+        let pipeline_breaking = left.execution_mode().is_unbounded()
+            || (right.execution_mode().is_unbounded()
+            && matches!(
+                    join_type,
+                    JoinType::Left
+                        | JoinType::Full
+                        | JoinType::LeftAnti
+                        | JoinType::LeftSemi
+                ));
+
+        let mode = if pipeline_breaking {
+            ExecutionMode::PipelineBreaking
+        } else {
+            crate::physical_planner::joins::utils::execution_mode_from_children([left, right])
+        };
+
+        // If contains projection, update the PlanProperties.
+        if let Some(projection) = projection {
+            let projection_exprs = project_index_to_exprs(projection, &schema);
+            // construct a map from the input expressions to the output expression of the Projection
+            let projection_mapping =
+                ProjectionMapping::try_new(&projection_exprs, &schema)?;
+            let out_schema = project_schema(&schema, Some(projection))?;
+            if let Partitioning::Hash(exprs, part) = output_partitioning {
+                let normalized_exprs = exprs
+                    .iter()
+                    .map(|expr| {
+                        eq_properties
+                            .project_expr(expr, &projection_mapping)
+                            .unwrap_or_else(|| {
+                                Arc::new(UnKnownColumn::new(&expr.to_string()))
+                            })
+                    })
+                    .collect();
+                output_partitioning = Partitioning::Hash(normalized_exprs, part);
+            }
+            eq_properties = eq_properties.project(&projection_mapping, out_schema);
+        }
+        Ok(PlanProperties::new(
+            eq_properties,
+            output_partitioning,
+            mode,
+        ))
+    }
 }
+
+fn project_index_to_exprs(
+    projection_index: &[usize],
+    schema: &SchemaRef,
+) -> Vec<(Arc<dyn PhysicalExpr>, String)> {
+    projection_index
+        .iter()
+        .map(|index| {
+            let field = schema.field(*index);
+            (
+                Arc::new(Column::new(
+                    field.name(),
+                    *index,
+                )) as Arc<dyn PhysicalExpr>,
+                field.name().to_owned(),
+            )
+        })
+        .collect::<Vec<_>>()
+}
+
 impl DisplayAs for IntervalJoinExec {
     //TODO: Update for the IntervalSearchJoinExec
     fn fmt_as(&self, t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
@@ -251,12 +407,16 @@ impl DisplayAs for IntervalJoinExec {
 }
 
 impl ExecutionPlan for IntervalJoinExec {
+    fn name(&self) -> &'static str {
+        "HashJoinExec"
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+    fn properties(&self) -> &PlanProperties {
+        &self.cache
     }
 
     fn required_input_distribution(&self) -> Vec<Distribution> {
@@ -266,16 +426,8 @@ impl ExecutionPlan for IntervalJoinExec {
                 Distribution::UnspecifiedDistribution,
             ],
             PartitionMode::Partitioned => {
-                let (left_expr, right_expr) = self
-                    .on
-                    .iter()
-                    .map(|(l, r)| {
-                        (
-                            Arc::new(l.clone()) as Arc<dyn PhysicalExpr>,
-                            Arc::new(r.clone()) as Arc<dyn PhysicalExpr>,
-                        )
-                    })
-                    .unzip();
+                let (left_expr, right_expr) =
+                    self.on.iter().map(|(l, r)| (l.clone(), r.clone())).unzip();
                 vec![
                     Distribution::HashPartitioned(left_expr),
                     Distribution::HashPartitioned(right_expr),
@@ -288,112 +440,44 @@ impl ExecutionPlan for IntervalJoinExec {
         }
     }
 
-    fn unbounded_output(&self, children: &[bool]) -> datafusion::common::Result<bool> {
-        let (left, right) = (children[0], children[1]);
-        // If left is unbounded, or right is unbounded with JoinType::Right,
-        // JoinType::Full, JoinType::RightAnti types.
-        let breaking = left
-            || (right
-                && matches!(
-                    self.join_type,
-                    JoinType::Left | JoinType::Full | JoinType::LeftAnti | JoinType::LeftSemi
-                ));
-
-        if breaking {
-            plan_err!(
-                "Join Error: The join with cannot be executed with unbounded inputs. {}",
-                if left && right {
-                    "Currently, we do not support unbounded inputs on both sides."
-                } else {
-                    "Please consider a different type of join or sources."
-                }
-            )
-        } else {
-            Ok(left || right)
-        }
-    }
-
-    fn output_partitioning(&self) -> Partitioning {
-        let left_columns_len = self.left.schema().fields.len();
-        match self.mode {
-            PartitionMode::CollectLeft => match self.join_type {
-                JoinType::Inner | JoinType::Right => adjust_right_output_partitioning(
-                    self.right.output_partitioning(),
-                    left_columns_len,
-                ),
-                JoinType::RightSemi | JoinType::RightAnti => self.right.output_partitioning(),
-                JoinType::Left | JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Full => {
-                    Partitioning::UnknownPartitioning(
-                        self.right.output_partitioning().partition_count(),
-                    )
-                }
-            },
-            PartitionMode::Partitioned => partitioned_join_output_partitioning(
-                self.join_type,
-                self.left.output_partitioning(),
-                self.right.output_partitioning(),
-                left_columns_len,
-            ),
-            PartitionMode::Auto => Partitioning::UnknownPartitioning(
-                self.right.output_partitioning().partition_count(),
-            ),
-        }
-    }
-
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        self.output_order.as_deref()
-    }
-
+    // For [JoinType::Inner] and [JoinType::RightSemi] in hash joins, the probe phase initiates by
+    // applying the hash function to convert the join key(s) in each row into a hash value from the
+    // probe side table in the order they're arranged. The hash value is used to look up corresponding
+    // entries in the hash table that was constructed from the build side table during the build phase.
+    //
+    // Because of the immediate generation of result rows once a match is found,
+    // the output of the join tends to follow the order in which the rows were read from
+    // the probe side table. This is simply due to the sequence in which the rows were processed.
+    // Hence, it appears that the hash join is preserving the order of the probe side.
+    //
+    // Meanwhile, in the case of a [JoinType::RightAnti] hash join,
+    // the unmatched rows from the probe side are also kept in order.
+    // This is because the **`RightAnti`** join is designed to return rows from the right
+    // (probe side) table that have no match in the left (build side) table. Because the rows
+    // are processed sequentially in the probe phase, and unmatched rows are directly output
+    // as results, these results tend to retain the order of the probe side table.
     fn maintains_input_order(&self) -> Vec<bool> {
         Self::maintains_input_order(self.join_type)
     }
 
-    fn equivalence_properties(&self) -> EquivalenceProperties {
-        join_equivalence_properties(
-            self.left.equivalence_properties(),
-            self.right.equivalence_properties(),
-            &self.join_type,
-            self.schema(),
-            &self.maintains_input_order(),
-            Some(Self::probe_side()),
-            self.on(),
-        )
-    }
-
-    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
-        vec![self.left.clone(), self.right.clone()]
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.left, &self.right]
     }
 
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+    ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(IntervalJoinExec::try_new(
             children[0].clone(),
             children[1].clone(),
             self.on.clone(),
             self.filter.clone(),
             &self.join_type,
+            self.projection.clone(),
             self.mode,
             self.null_equals_null,
         )?))
-    }
-
-    fn metrics(&self) -> Option<MetricsSet> {
-        Some(self.metrics.clone_inner())
-    }
-
-    fn statistics(&self) -> datafusion::common::Result<Statistics> {
-        // TODO stats: it is not possible in general to know the output size of joins
-        // There are some special cases though, for example:
-        // - `A LEFT JOIN B ON A.col=B.col` with `COUNT_DISTINCT(B.col)=COUNT(B.col)`
-        estimate_join_statistics(
-            self.left.clone(),
-            self.right.clone(),
-            self.on.clone(),
-            &self.join_type,
-            &self.schema,
-        )
     }
 
     fn execute(
@@ -478,13 +562,41 @@ impl ExecutionPlan for IntervalJoinExec {
             right_interval,
         }))
     }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
+    }
+
+    fn statistics(&self) -> Result<Statistics> {
+        // TODO stats: it is not possible in general to know the output size of joins
+        // There are some special cases though, for example:
+        // - `A LEFT JOIN B ON A.col=B.col` with `COUNT_DISTINCT(B.col)=COUNT(B.col)`
+        let mut stats = estimate_join_statistics(
+            self.left.clone(),
+            self.right.clone(),
+            self.on.clone(),
+            &self.join_type,
+            &self.join_schema,
+        )?;
+        // Project statistics if there is a projection
+        if let Some(projection) = &self.projection {
+            stats.column_statistics = stats
+                .column_statistics
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| projection.contains(i))
+                .map(|(_, s)| s)
+                .collect();
+        }
+        Ok(stats)
+    }
 }
 
 async fn collect_left_input(
     partition: Option<usize>,
     random_state: RandomState,
     left: Arc<dyn ExecutionPlan>,
-    on_left: Vec<Column>,
+    on_left: Vec<PhysicalExprRef>,
     context: Arc<TaskContext>,
     metrics: BuildProbeJoinMetrics,
     reservation: MemoryReservation,
@@ -578,7 +690,7 @@ async fn collect_left_input(
 }
 
 fn update_hashmap(
-    on: &[Column],
+    on: &[PhysicalExprRef],
     left_interval: &ColInterval,
     batch: &RecordBatch,
     hash_map: &mut std::collections::HashMap<u64, Vec<Interval<Metadata>>>,
@@ -620,9 +732,9 @@ struct IntervalJoinStream {
     /// Input schema
     schema: Arc<Schema>,
     /// equijoin columns from the left (build side)
-    on_left: Vec<Column>,
+    on_left: Vec<PhysicalExprRef>,
     /// equijoin columns from the right (probe side)
-    on_right: Vec<Column>,
+    on_right: Vec<PhysicalExprRef>,
     /// optional join filter
     filter: Option<JoinFilter>,
     /// type of the join (left, right, semi, etc)
@@ -758,15 +870,15 @@ impl ColInterval {
 }
 
 fn get_with_source_index(node: &Arc<dyn PhysicalExpr>, indices: &[ColumnIndex]) -> Arc<dyn PhysicalExpr> {
-    node.clone().transform_up(&|node| {
+    node.clone().transform_up(|node| {
         if let Some(column) = node.to_column() {
             let new_column = Column::new(column.name(), indices[column.index()].index);
             let result = Arc::new(new_column) as Arc<dyn PhysicalExpr>;
-            Ok(Transformed::Yes(result))
+            Ok(Transformed::yes(result))
         } else {
-            Ok(Transformed::No(node))
+            Ok(Transformed::no(node))
         }
-    }).unwrap()
+    }).data().unwrap()
 }
 
 //TODO Add support for datatype, currently expected to be Int64
