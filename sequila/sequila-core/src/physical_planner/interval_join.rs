@@ -1,12 +1,13 @@
-use crate::physical_planner::joins::utils::{
-    estimate_join_statistics, BuildProbeJoinMetrics, OnceAsync, OnceFut,
-};
+use std::any::Any;
+use std::fmt;
+use std::fmt::Debug;
+use std::mem::size_of;
+use std::sync::Arc;
+use std::task::Poll;
+
 use ahash::RandomState;
-use arrow::array::{
-    Array, ArrayRef, AsArray, PrimitiveArray, RecordBatch, UInt32Array, UInt32BufferBuilder,
-};
+use arrow::array::{Array, AsArray, PrimitiveArray, RecordBatch, UInt32Array, UInt32BufferBuilder};
 use arrow::compute::concat_batches;
-use arrow::datatypes::DataType;
 use arrow::datatypes::{Schema, SchemaRef};
 use coitrees::*;
 use datafusion::common::hash_utils::create_hashes;
@@ -18,13 +19,9 @@ use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskCo
 use datafusion::logical_expr::{Operator, UserDefinedLogicalNode};
 use datafusion::physical_expr::equivalence::{join_equivalence_properties, ProjectionMapping};
 use datafusion::physical_expr::expressions::{BinaryExpr, CastExpr, Column, UnKnownColumn};
-use datafusion::physical_expr::{
-    Distribution, EquivalenceProperties, Partitioning, PhysicalExpr, PhysicalExprRef,
-    PhysicalSortExpr,
-};
+use datafusion::physical_expr::{Distribution, Partitioning, PhysicalExpr, PhysicalExprRef};
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::common::can_project;
-use datafusion::physical_plan::joins::utils::calculate_join_output_ordering;
 use datafusion::physical_plan::joins::utils::check_join_is_valid;
 use datafusion::physical_plan::joins::utils::partitioned_join_output_partitioning;
 use datafusion::physical_plan::joins::utils::{adjust_right_output_partitioning, JoinOnRef};
@@ -36,13 +33,10 @@ use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, Pla
 use datafusion::physical_plan::{ExecutionMode, ExecutionPlanProperties};
 use fnv::FnvHashMap;
 use futures::{ready, Stream, StreamExt, TryStreamExt};
-use log::info;
-use std::any::Any;
-use std::fmt::Debug;
-use std::mem::size_of;
-use std::sync::Arc;
-use std::task::Poll;
-use std::{fmt, thread};
+
+use crate::physical_planner::joins::utils::{
+    estimate_join_statistics, BuildProbeJoinMetrics, OnceAsync, OnceFut,
+};
 
 type Metadata = usize;
 
@@ -106,6 +100,8 @@ pub struct IntervalJoinExec {
     pub on: Vec<(PhysicalExprRef, PhysicalExprRef)>,
     /// Filters which are applied while finding matching rows
     pub filter: Option<JoinFilter>,
+    /// Columns that represent start/end of an interval
+    pub intervals: (ColInterval, ColInterval),
     /// How the join is performed (`OUTER`, `INNER`, etc)
     pub join_type: JoinType,
     /// The output schema for the join
@@ -137,6 +133,7 @@ impl IntervalJoinExec {
         right: Arc<dyn ExecutionPlan>,
         on: JoinOn,
         filter: Option<JoinFilter>,
+        intervals: (ColInterval, ColInterval),
         join_type: &JoinType,
         projection: Option<Vec<usize>>,
         partition_mode: PartitionMode,
@@ -175,6 +172,7 @@ impl IntervalJoinExec {
             right,
             on,
             filter,
+            intervals,
             join_type: *join_type,
             join_schema: join_schema,
             left_fut: Default::default(),
@@ -261,6 +259,7 @@ impl IntervalJoinExec {
             self.right.clone(),
             self.on.clone(),
             self.filter.clone(),
+            self.intervals.clone(),
             &self.join_type,
             projection,
             self.mode,
@@ -463,6 +462,7 @@ impl ExecutionPlan for IntervalJoinExec {
             children[1].clone(),
             self.on.clone(),
             self.filter.clone(),
+            self.intervals.clone(),
             &self.join_type,
             self.projection.clone(),
             self.mode,
@@ -487,10 +487,7 @@ impl ExecutionPlan for IntervalJoinExec {
             );
         }
 
-        let (left_interval, right_interval) = self
-            .filter()
-            .and_then(parse_filter)
-            .expect(format!("couldn't parse {:?}", self.filter()).as_str());
+        let (left_interval, right_interval) = self.intervals.clone();
 
         let join_metrics = BuildProbeJoinMetrics::new(partition, &self.metrics);
         let left_fut = match self.mode {
@@ -871,7 +868,7 @@ impl FromPhysicalExpr for dyn PhysicalExpr {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ColInterval {
     start: Arc<dyn PhysicalExpr>,
     end: Arc<dyn PhysicalExpr>,
@@ -903,7 +900,7 @@ fn get_with_source_index(
 }
 
 //TODO Add support for datatype, currently expected to be Int64
-pub(crate) fn parse_filter(filter: &JoinFilter) -> Option<(ColInterval, ColInterval)> {
+pub(crate) fn parse_intervals(filter: &JoinFilter) -> Option<(ColInterval, ColInterval)> {
     let expr = filter.expression().to_binary()?;
     if matches!(expr.op(), Operator::And) {
         let left = expr.left().to_binary()?;
@@ -944,20 +941,11 @@ pub(crate) fn parse_filter(filter: &JoinFilter) -> Option<(ColInterval, ColInter
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::physical_planner::interval_join::parse_filter;
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::assert_batches_sorted_eq;
-    use datafusion::common::JoinSide;
-    use datafusion::config::ConfigOptions;
-    use datafusion::logical_expr::{ExprSchemable, Operator};
-    use datafusion::physical_expr::expressions::CastExpr;
-    use datafusion::physical_plan::expressions::{BinaryExpr, Column};
-    use datafusion::physical_plan::filter::FilterExec;
-    use datafusion::physical_plan::PhysicalExpr;
-    use datafusion::prelude::*;
-    use std::sync::Arc;
-
     use crate::session_context::SeQuiLaSessionExt;
+    use datafusion::arrow::datatypes::{DataType, Field};
+    use datafusion::assert_batches_sorted_eq;
+    use datafusion::config::ConfigOptions;
+    use datafusion::prelude::{col, CsvReadOptions, DataFrame, SessionConfig, SessionContext};
 
     const READS_PATH: &str = "../../testing/data/interval/reads.csv";
     const TARGETS_PATH: &str = "../../testing/data/interval/targets.csv";
@@ -1092,142 +1080,46 @@ mod tests {
         // who builds it?
         let filter = JoinFilter::new(Arc::new(expression), column_indices, schema);
 
-        dbg!(parse_filter(&filter));
+        let (left, right) = parse_intervals(&filter).expect("must present");
+        let expected_left = r#"ColInterval {
+    start: Column {
+        name: "lstart",
+        index: 1,
+    },
+    end: Column {
+        name: "lend",
+        index: 2,
+    },
+}"#;
 
-        let fields = filter.schema().fields().into_iter();
-        let zipped = filter
-            .column_indices()
-            .iter()
-            .zip(fields)
-            .collect::<Vec<_>>();
+        assert_eq!(format!("{:#?}", left), expected_left);
 
-        fn to_binary_expr(expr: &Arc<dyn PhysicalExpr>) -> Option<&BinaryExpr> {
-            expr.as_any().downcast_ref::<BinaryExpr>()
-        }
-
-        fn parse_leaf(
-            expr: &BinaryExpr,
-        ) -> Option<(&Column, &Column, &datafusion::logical_expr::Operator)> {
-            let l = expr.left().as_any().downcast_ref::<Column>();
-            let r = expr.right().as_any().downcast_ref::<Column>();
-            l.zip(r).map(|(l, r)| (l, r, expr.op()))
-        }
-
-        let x = to_binary_expr(filter.expression()).and_then(|expr| {
-            let left = to_binary_expr(expr.left()).and_then(parse_leaf);
-            let right = to_binary_expr(expr.right()).and_then(parse_leaf);
-            left.zip(right).map(|((ll, lr, lop), (rl, rr, rop))| {
-                let cols = vec![ll, lr, rl, rr];
-                if (*lop == Operator::GtEq && *rop == Operator::LtEq) {
-                    // assume that LEFT_END >= RIGHT_START in LEFT and LEFT_START <= RIGHT_END in RIGHT
-                    let left_start = zipped[rl.index()];
-                    let left_end = zipped[ll.index()];
-
-                    let right_start = zipped[lr.index()];
-                    let right_end = zipped[rr.index()];
-
-                    ((left_start, left_end), (right_start, right_end))
-                } else if (*lop == Operator::LtEq && *rop == Operator::GtEq) {
-                    // assume that LEFT_START <= RIGHT_END in LEFT and LEFT_END >= RIGHT_START in RIGHT
-
-                    let left_start = zipped[ll.index()];
-                    let left_end = zipped[rl.index()];
-
-                    let right_start = zipped[rr.index()];
-                    let right_end = zipped[lr.index()];
-
-                    ((left_start, left_end), (right_start, right_end))
-                } else {
-                    panic!("cannot parse")
-                }
-            })
-        });
-
-        // println!("{:#?}", x);
-
-        /*
-        JoinFilter {
-            expression: BinaryExpr {
-                left: BinaryExpr {
-                    left: Column {
-                        name: "lend",
-                        index: 1,
-                    },
-                    op: GtEq,
-                    right: Column {
-                        name: "rstart",
-                        index: 2,
-                    },
-                },
-                op: And,
-                right: BinaryExpr {
-                    left: Column {
-                        name: "lstart",
-                        index: 0,
-                    },
-                    op: LtEq,
-                    right: Column {
-                        name: "rend",
-                        index: 3,
-                    },
-                },
+        let expected_right = r#"ColInterval {
+    start: Column {
+        name: "rstart",
+        index: 1,
+    },
+    end: CastExpr {
+        expr: Column {
+            name: "rend",
+            index: 2,
+        },
+        cast_type: Int64,
+        cast_options: CastOptions {
+            safe: false,
+            format_options: FormatOptions {
+                safe: true,
+                null: "",
+                date_format: None,
+                datetime_format: None,
+                timestamp_format: None,
+                timestamp_tz_format: None,
+                time_format: None,
+                duration_format: Pretty,
             },
-            column_indices: [
-                ColumnIndex {
-                    index: 1,
-                    side: Left,
-                },
-                ColumnIndex {
-                    index: 2,
-                    side: Left,
-                },
-                ColumnIndex {
-                    index: 1,
-                    side: Right,
-                },
-                ColumnIndex {
-                    index: 2,
-                    side: Right,
-                },
-            ],
-            schema: Schema {
-                fields: [
-                    Field {
-                        name: "lstart",
-                        data_type: Int64,
-                        nullable: false,
-                        dict_id: 0,
-                        dict_is_ordered: false,
-                        metadata: {},
-                    },
-                    Field {
-                        name: "lend",
-                        data_type: Int64,
-                        nullable: false,
-                        dict_id: 0,
-                        dict_is_ordered: false,
-                        metadata: {},
-                    },
-                    Field {
-                        name: "rstart",
-                        data_type: Int64,
-                        nullable: false,
-                        dict_id: 0,
-                        dict_is_ordered: false,
-                        metadata: {},
-                    },
-                    Field {
-                        name: "rend",
-                        data_type: Int64,
-                        nullable: false,
-                        dict_id: 0,
-                        dict_is_ordered: false,
-                        metadata: {},
-                    },
-                ],
-                metadata: {},
-            },
-        }
-                 */
+        },
+    },
+}"#;
+        assert_eq!(format!("{:#?}", right), expected_right);
     }
 }

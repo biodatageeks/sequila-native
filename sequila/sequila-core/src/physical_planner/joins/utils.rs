@@ -23,21 +23,18 @@ use std::task::{Context, Poll};
 use std::usize;
 
 use arrow::datatypes::Schema;
-use datafusion::common::{DataFusionError, JoinType, Result, SharedResult};
 use datafusion::common::stats::Precision;
+use datafusion::common::{DataFusionError, JoinType, Result, SharedResult};
 use datafusion::logical_expr::interval_arithmetic::Interval;
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_plan::{
-    ColumnStatistics, ExecutionMode, ExecutionPlan, Statistics,
-};
-use datafusion::physical_plan::ExecutionPlanProperties;
 use datafusion::physical_plan::joins::utils::JoinOn;
 use datafusion::physical_plan::metrics::{self, ExecutionPlanMetricsSet, MetricBuilder};
-use futures::{FutureExt, ready};
+use datafusion::physical_plan::ExecutionPlanProperties;
+use datafusion::physical_plan::{ColumnStatistics, ExecutionMode, ExecutionPlan, Statistics};
 use futures::future::{BoxFuture, Shared};
+use futures::{ready, FutureExt};
 use parking_lot::Mutex;
-
 
 /// Conservatively "combines" execution modes of a given collection of operators.
 pub fn execution_mode_from_children<'a>(
