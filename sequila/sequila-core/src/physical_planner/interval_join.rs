@@ -9,11 +9,12 @@ use ahash::RandomState;
 use arrow::array::{Array, AsArray, PrimitiveArray, RecordBatch, UInt32Array, UInt32BufferBuilder};
 use arrow::compute::concat_batches;
 use arrow::datatypes::{Schema, SchemaRef};
-use coitrees::*;
+use coitrees::{COITree, Interval, IntervalTree};
 use datafusion::common::hash_utils::create_hashes;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
-use datafusion::common::{internal_err, plan_err, DataFusionError, JoinSide, JoinType, Statistics};
-use datafusion::common::{project_schema, Result};
+use datafusion::common::{
+    internal_err, plan_err, project_schema, DataFusionError, JoinSide, JoinType, Result, Statistics,
+};
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
 use datafusion::logical_expr::{Operator, UserDefinedLogicalNode};
@@ -22,15 +23,16 @@ use datafusion::physical_expr::expressions::{BinaryExpr, CastExpr, Column, UnKno
 use datafusion::physical_expr::{Distribution, Partitioning, PhysicalExpr, PhysicalExprRef};
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::common::can_project;
-use datafusion::physical_plan::joins::utils::check_join_is_valid;
-use datafusion::physical_plan::joins::utils::partitioned_join_output_partitioning;
-use datafusion::physical_plan::joins::utils::{adjust_right_output_partitioning, JoinOnRef};
-use datafusion::physical_plan::joins::utils::{build_join_schema, JoinOn};
-use datafusion::physical_plan::joins::utils::{ColumnIndex, JoinFilter};
+use datafusion::physical_plan::joins::utils::{
+    adjust_right_output_partitioning, build_join_schema, check_join_is_valid,
+    partitioned_join_output_partitioning, ColumnIndex, JoinFilter, JoinOn, JoinOnRef,
+};
 use datafusion::physical_plan::joins::PartitionMode;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
-use datafusion::physical_plan::{ExecutionMode, ExecutionPlanProperties};
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, ExecutionPlanProperties,
+    PlanProperties,
+};
 use fnv::FnvHashMap;
 use futures::{ready, Stream, StreamExt, TryStreamExt};
 
@@ -42,7 +44,7 @@ type Metadata = usize;
 
 pub struct IntervalJoinHashMap {
     // Stores hash value to last row index
-    map: FnvHashMap<u64, coitrees::COITree<Metadata, u32>>,
+    map: FnvHashMap<u64, COITree<Metadata, u32>>,
 }
 
 impl Debug for IntervalJoinHashMap {
