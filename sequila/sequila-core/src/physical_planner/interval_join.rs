@@ -943,7 +943,7 @@ pub(crate) fn parse_intervals(filter: &JoinFilter) -> Option<(ColInterval, ColIn
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_context::SeQuiLaSessionExt;
+    use crate::session_context::{SeQuiLaSessionExt, SequilaConfig};
     use datafusion::arrow::datatypes::{DataType, Field};
     use datafusion::assert_batches_sorted_eq;
     use datafusion::config::ConfigOptions;
@@ -962,7 +962,11 @@ mod tests {
 
         let options = ConfigOptions::new();
 
+        let sequila_config = SequilaConfig {
+            prefer_interval_join: true,
+        };
         let config = SessionConfig::from(options)
+            .with_option_extension(sequila_config)
             .with_batch_size(2000)
             .with_target_partitions(1);
 

@@ -6,13 +6,14 @@ use datafusion::prelude::*;
 use datafusion_cli::exec;
 use datafusion_cli::print_options::PrintOptions;
 use log::info;
-use sequila_core::session_context::SeQuiLaSessionExt;
+use sequila_core::session_context::{SeQuiLaSessionExt, SequilaConfig};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     env_logger::init();
-    let options = ConfigOptions::new();
-    let config = SessionConfig::from(options);
+    let mut options = ConfigOptions::new();
+    options.extensions.insert(SequilaConfig::default());
+    let config = SessionConfig::from(options).with_information_schema(true);
     let rocket = emojis::get_by_shortcode("rocket").unwrap();
     info!("Starting SeQuiLa-native CLI {rocket}...");
     let mut ctx = SessionContext::new_with_sequila(config);

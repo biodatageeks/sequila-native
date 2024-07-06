@@ -1,4 +1,5 @@
 use crate::physical_planner::interval_join::{parse_intervals, IntervalJoinExec};
+use crate::session_context::SequilaConfig;
 use async_trait::async_trait;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::DFSchema;
@@ -29,6 +30,16 @@ impl PhysicalOptimizerRule for RangeJoinPhysicalOptimizationRule {
         config: &ConfigOptions,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         info!("Applying {}...", self.name());
+        let prefer_interval_join = config
+            .extensions
+            .get::<SequilaConfig>()
+            .map(|c| c.prefer_interval_join)
+            .unwrap_or(false);
+
+        if (!prefer_interval_join) {
+            return Ok(plan);
+        }
+
         plan.transform_down(|plan| {
             match plan.as_any().downcast_ref::<HashJoinExec>() {
                 //TODO: Add a check if the plan is a range join (e.g. pattern matching on join and filters) and not only a hash join
