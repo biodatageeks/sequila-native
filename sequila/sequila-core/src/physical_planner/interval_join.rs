@@ -717,8 +717,10 @@ fn update_hashmap(
     for i in 0..batch.num_rows() {
         let (position, hash_val) = hash_values_iter[i];
         let intervals = hash_map.entry(*hash_val).or_insert(Vec::new());
-        let start = start.value(i) as i32;
-        let end = end.value(i) as i32;
+
+        let start: i32 = parse_i32(start.value(i))?;
+        let end: i32 = parse_i32(end.value(i))?;
+
         intervals.push(Interval::new(start, end, position))
     }
 
@@ -802,9 +804,21 @@ impl IntervalJoinStream {
                     let mut right_builder = UInt32BufferBuilder::new(0);
 
                     for (i, hash_val) in hashes_buffer.into_iter().enumerate() {
+                        let start = parse_i32(start.value(i));
+
+                        let start = match start {
+                            Ok(start) => start,
+                            Err(e) => return Some(Err(e)),
+                        };
+
+                        let end = parse_i32(end.value(i));
+
+                        let end = match end {
+                            Ok(end) => end,
+                            Err(e) => return Some(Err(e)),
+                        };
+
                         left_data.hash_map.map.get(&hash_val).map(|tree| {
-                            let start = start.value(i) as i32;
-                            let end = end.value(i) as i32;
                             tree.query(start, end, |node| {
                                 left_builder.append(node.metadata as u32);
                                 right_builder.append(i as u32);
@@ -938,6 +952,11 @@ pub(crate) fn parse_intervals(filter: &JoinFilter) -> Option<(ColInterval, ColIn
     } else {
         None
     }
+}
+
+fn parse_i32(value: i64) -> Result<i32> {
+    i32::try_from(value)
+        .map_err(|_| DataFusionError::NotImplemented(format!("could not parse {} as i32", value)))
 }
 
 #[cfg(test)]
@@ -1127,5 +1146,53 @@ mod tests {
     },
 }"#;
         assert_eq!(format!("{:#?}", right), expected_right);
+    }
+
+    #[tokio::test]
+    async fn test_wrong_datatype() -> Result<()> {
+        let schema = Schema::new(vec![
+            Field::new("contig", DataType::Utf8, false),
+            Field::new("pos_start", DataType::Int64, false),
+            Field::new("pos_end", DataType::Int64, false),
+        ]);
+
+        let options = ConfigOptions::new();
+
+        let sequila_config = SequilaConfig {
+            prefer_interval_join: true
+        };
+        let config = SessionConfig::from(options)
+            .with_option_extension(sequila_config)
+            .with_information_schema(true)
+            .with_batch_size(2000)
+            .with_target_partitions(1);
+
+        let ctx = SessionContext::new_with_sequila(config);
+
+        let sqls = r#"
+        CREATE TABLE a (contig VARCHAR NOT NULL, start BIGINT NOT NULL, end BIGINT NOT NULL);
+        CREATE TABLE b (contig VARCHAR NOT NULL, start BIGINT NOT NULL, end BIGINT NOT NULL);
+        INSERT INTO a (contig, start, end) VALUES ('a', 1, 2), ('b', 1, 4);
+        INSERT INTO b (contig, start, end) VALUES ('a', 1, 2), ('b', 3, 3147483647 + 1);
+        "#;
+
+        for line in sqls.lines().filter(|&l| !l.trim().is_empty()) {
+            dbg!(line);
+            ctx.sql(line).await?.show().await?;
+        }
+
+        // ctx.sql("explain select * from a").await?.show().await?;
+
+        // ctx.sql("INSERT INTO a (contig, start, end) VALUES ('a', 1, 2), ('b', 3, 4)").await?.show().await?;
+        // dbg!(ctx.sql("select * from a").await?.collect().await?);
+        ctx.sql("select * from a").await?.show().await?;
+        ctx.sql("select * from b").await?.show().await?;
+
+        println!("{}", u32::MAX);
+        println!("{}", i32::MAX);
+
+        ctx.sql("select * from a join b on a.contig = b.contig and a.end >= b.start and a.start <= b.end").await?.show().await?;
+
+        Ok(())
     }
 }
