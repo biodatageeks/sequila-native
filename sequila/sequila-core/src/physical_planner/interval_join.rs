@@ -745,6 +745,10 @@ struct IntervalJoinStream {
 }
 
 impl IntervalJoinStream {
+    // fn process_next(&self, left_data: &JoinLeftData, batch: &RecordBatch) -> Result<RecordBatch> {
+    //
+    // }
+
     fn poll_next_impl(
         &mut self,
         cx: &mut std::task::Context<'_>,
@@ -763,13 +767,21 @@ impl IntervalJoinStream {
                         .on_right
                         .iter()
                         .map(|c| c.evaluate(&batch)?.into_array(batch.num_rows()))
-                        .collect::<Result<Vec<_>>>()
-                        .ok()?;
+                        .collect::<Result<Vec<_>>>();
+
+                    let rights = match rights {
+                        Ok(rights) => rights,
+                        Err(e) => return Some(Err(e)),
+                    };
 
                     let mut hashes_buffer: Vec<u64> = Vec::new();
                     hashes_buffer.clear();
                     hashes_buffer.resize(batch.num_rows(), 0);
-                    create_hashes(&rights, &self.random_state, &mut hashes_buffer).ok()?;
+                    let unused = create_hashes(&rights, &self.random_state, &mut hashes_buffer);
+
+                    if let Err(e) = unused {
+                        return Some(Err(e));
+                    }
 
                     let start = evaluate_as_i32(self.right_interval.start.clone(), &batch);
 
@@ -805,15 +817,31 @@ impl IntervalJoinStream {
                     let mut columns: Vec<Arc<dyn Array>> =
                         Vec::with_capacity(self.schema.fields().len());
 
+                    //TODO: refactor
                     for c in left_data.batch.columns() {
-                        columns.push(arrow::compute::take(c, &left_indexes, None).ok()?);
+                        let taken = arrow::compute::take(c, &left_indexes, None);
+                        if let Ok(value) = taken {
+                            columns.push(value);
+                        } else {
+                            let err = DataFusionError::ArrowError(taken.unwrap_err(), None);
+                            return Some(Err(err));
+                        }
                     }
 
                     for c in batch.columns() {
-                        columns.push(arrow::compute::take(c, &right_indexes, None).ok()?);
+                        let taken = arrow::compute::take(c, &right_indexes, None);
+                        if let Ok(value) = taken {
+                            columns.push(value);
+                        } else {
+                            let err = DataFusionError::ArrowError(taken.unwrap_err(), None);
+                            return Some(Err(err));
+                        }
                     }
 
-                    Some(Ok(RecordBatch::try_new(self.schema.clone(), columns).ok()?))
+                    let result = RecordBatch::try_new(self.schema.clone(), columns)
+                        .map_err(|e| DataFusionError::ArrowError(e, None));
+
+                    Some(result)
                 }
                 other => other,
             })
