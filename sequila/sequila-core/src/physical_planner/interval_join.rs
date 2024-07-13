@@ -8,7 +8,7 @@ use std::task::Poll;
 use ahash::RandomState;
 use arrow::array::{Array, AsArray, PrimitiveArray, RecordBatch, UInt32Array, UInt32BufferBuilder};
 use arrow::compute::concat_batches;
-use arrow::datatypes::{Schema, SchemaRef};
+use arrow::datatypes::{DataType, Schema, SchemaRef};
 use coitrees::{COITree, Interval, IntervalTree};
 use datafusion::common::hash_utils::create_hashes;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
@@ -702,26 +702,14 @@ fn update_hashmap(
         .map(|(i, val)| (i + offset, val))
         .collect::<Vec<_>>();
 
-    let start = left_interval
-        .start
-        .evaluate(batch)?
-        .into_array(batch.num_rows())?;
-    let start = start.as_primitive::<arrow::datatypes::Int64Type>();
-
-    let end = left_interval
-        .end
-        .evaluate(batch)?
-        .into_array(batch.num_rows())?;
-    let end = end.as_primitive::<arrow::datatypes::Int64Type>();
+    let start = evaluate_as_i32(left_interval.start.clone(), batch)?;
+    let end = evaluate_as_i32(left_interval.end.clone(), batch)?;
 
     for i in 0..batch.num_rows() {
         let (position, hash_val) = hash_values_iter[i];
         let intervals = hash_map.entry(*hash_val).or_insert(Vec::new());
 
-        let start: i32 = parse_i32(start.value(i))?;
-        let end: i32 = parse_i32(end.value(i))?;
-
-        intervals.push(Interval::new(start, end, position))
+        intervals.push(Interval::new(start.value(i), end.value(i), position))
     }
 
     Ok(())
@@ -769,6 +757,7 @@ impl IntervalJoinStream {
         self.right
             .poll_next_unpin(cx)
             .map(|maybe_batch| match maybe_batch {
+                // f: Option<Result<RecordBatch>> => Option<Result<RecordBatch>>
                 Some(Ok(batch)) => {
                     let rights = self
                         .on_right
@@ -782,44 +771,26 @@ impl IntervalJoinStream {
                     hashes_buffer.resize(batch.num_rows(), 0);
                     create_hashes(&rights, &self.random_state, &mut hashes_buffer).ok()?;
 
-                    let start = self
-                        .right_interval
-                        .start
-                        .evaluate(&batch)
-                        .ok()?
-                        .into_array(batch.num_rows())
-                        .ok()?;
-                    let start = start.as_primitive::<arrow::datatypes::Int64Type>();
+                    let start = evaluate_as_i32(self.right_interval.start.clone(), &batch);
 
-                    let end = self
-                        .right_interval
-                        .end
-                        .evaluate(&batch)
-                        .ok()?
-                        .into_array(batch.num_rows())
-                        .ok()?;
-                    let end = end.as_primitive::<arrow::datatypes::Int64Type>();
+                    let start = match start {
+                        Ok(start) => start,
+                        Err(e) => return Some(Err(e)),
+                    };
+
+                    let end = evaluate_as_i32(self.right_interval.end.clone(), &batch);
+
+                    let end = match end {
+                        Ok(end) => end,
+                        Err(e) => return Some(Err(e)),
+                    };
 
                     let mut left_builder = UInt32BufferBuilder::new(0);
                     let mut right_builder = UInt32BufferBuilder::new(0);
 
                     for (i, hash_val) in hashes_buffer.into_iter().enumerate() {
-                        let start = parse_i32(start.value(i));
-
-                        let start = match start {
-                            Ok(start) => start,
-                            Err(e) => return Some(Err(e)),
-                        };
-
-                        let end = parse_i32(end.value(i));
-
-                        let end = match end {
-                            Ok(end) => end,
-                            Err(e) => return Some(Err(e)),
-                        };
-
                         left_data.hash_map.map.get(&hash_val).map(|tree| {
-                            tree.query(start, end, |node| {
+                            tree.query(start.value(i), end.value(i), |node| {
                                 left_builder.append(node.metadata as u32);
                                 right_builder.append(i as u32);
                             });
@@ -954,9 +925,17 @@ pub(crate) fn parse_intervals(filter: &JoinFilter) -> Option<(ColInterval, ColIn
     }
 }
 
-fn parse_i32(value: i64) -> Result<i32> {
-    i32::try_from(value)
-        .map_err(|_| DataFusionError::NotImplemented(format!("could not parse {} as i32", value)))
+fn evaluate_as_i32(
+    expr: Arc<dyn PhysicalExpr>,
+    batch: &RecordBatch,
+) -> Result<PrimitiveArray<arrow::datatypes::Int32Type>> {
+    let array = CastExpr::new(expr, DataType::Int32, None)
+        .evaluate(batch)?
+        .into_array(batch.num_rows())?
+        .as_primitive::<datafusion::arrow::datatypes::Int32Type>()
+        .to_owned();
+
+    Ok(array)
 }
 
 #[cfg(test)]
@@ -967,9 +946,26 @@ mod tests {
     use datafusion::assert_batches_sorted_eq;
     use datafusion::config::ConfigOptions;
     use datafusion::prelude::{col, CsvReadOptions, DataFrame, SessionConfig, SessionContext};
+    use datafusion::test_util::plan_and_collect;
 
     const READS_PATH: &str = "../../testing/data/interval/reads.csv";
     const TARGETS_PATH: &str = "../../testing/data/interval/targets.csv";
+
+    fn create_context() -> SessionContext {
+        let options = ConfigOptions::new();
+
+        let sequila_config = SequilaConfig {
+            prefer_interval_join: true,
+        };
+
+        let config = SessionConfig::from(options)
+            .with_option_extension(sequila_config)
+            .with_information_schema(true)
+            .with_batch_size(2000)
+            .with_target_partitions(1);
+
+        SessionContext::new_with_sequila(config)
+    }
 
     #[tokio::test]
     async fn init() -> datafusion::common::Result<()> {
@@ -979,18 +975,8 @@ mod tests {
             Field::new("pos_end", DataType::Int64, false),
         ]);
 
-        let options = ConfigOptions::new();
+        let ctx = create_context();
 
-        let sequila_config = SequilaConfig {
-            prefer_interval_join: true,
-        };
-        let config = SessionConfig::from(options)
-            .with_option_extension(sequila_config)
-            .with_batch_size(2000)
-            .with_target_partitions(1);
-
-        let ctx = SessionContext::new_with_sequila(config);
-        // let ctx = SessionContext::new();
         let csv_options = CsvReadOptions::new()
             .has_header(true)
             .schema(&schema)
@@ -1150,48 +1136,43 @@ mod tests {
 
     #[tokio::test]
     async fn test_wrong_datatype() -> Result<()> {
-        let schema = Schema::new(vec![
-            Field::new("contig", DataType::Utf8, false),
-            Field::new("pos_start", DataType::Int64, false),
-            Field::new("pos_end", DataType::Int64, false),
-        ]);
+        let ctx = create_context();
+        let max_plus_one = i64::from(i32::MAX) + 1;
 
-        let options = ConfigOptions::new();
-
-        let sequila_config = SequilaConfig {
-            prefer_interval_join: true
-        };
-        let config = SessionConfig::from(options)
-            .with_option_extension(sequila_config)
-            .with_information_schema(true)
-            .with_batch_size(2000)
-            .with_target_partitions(1);
-
-        let ctx = SessionContext::new_with_sequila(config);
-
-        let sqls = r#"
-        CREATE TABLE a (contig VARCHAR NOT NULL, start BIGINT NOT NULL, end BIGINT NOT NULL);
-        CREATE TABLE b (contig VARCHAR NOT NULL, start BIGINT NOT NULL, end BIGINT NOT NULL);
-        INSERT INTO a (contig, start, end) VALUES ('a', 1, 2), ('b', 1, 4);
-        INSERT INTO b (contig, start, end) VALUES ('a', 1, 2), ('b', 3, 3147483647 + 1);
+        let create_table_a_query = r#"
+            CREATE TABLE a (contig VARCHAR NOT NULL, start BIGINT NOT NULL, end BIGINT NOT NULL)
+            AS VALUES ('a', 1, 2), ('b', 1, 4)
         "#;
 
-        for line in sqls.lines().filter(|&l| !l.trim().is_empty()) {
-            dbg!(line);
-            ctx.sql(line).await?.show().await?;
-        }
+        let create_table_b_query = format!(
+            r#"
+            CREATE TABLE b (contig VARCHAR NOT NULL, start BIGINT NOT NULL, end BIGINT NOT NULL)
+            AS VALUES ('a', 1, 2), ('b', 3, {})
+        "#,
+            max_plus_one
+        );
 
-        // ctx.sql("explain select * from a").await?.show().await?;
+        ctx.sql(create_table_a_query).await?;
+        ctx.sql(create_table_b_query.as_str()).await?;
 
-        // ctx.sql("INSERT INTO a (contig, start, end) VALUES ('a', 1, 2), ('b', 3, 4)").await?.show().await?;
-        // dbg!(ctx.sql("select * from a").await?.collect().await?);
-        ctx.sql("select * from a").await?.show().await?;
-        ctx.sql("select * from b").await?.show().await?;
+        let select_query = r#"
+            SELECT * FROM a
+            JOIN b ON
+                a.contig = b.contig AND
+                a.end >= b.start AND
+                a.start <= b.end
+        "#;
 
-        println!("{}", u32::MAX);
-        println!("{}", i32::MAX);
+        let err: Result<_> = plan_and_collect(&ctx, select_query).await;
 
-        ctx.sql("select * from a join b on a.contig = b.contig and a.end >= b.start and a.start <= b.end").await?.show().await?;
+        assert!(err.is_err());
+        assert_eq!(
+            format!(
+                "Arrow error: Cast error: Can't cast value {} to type Int32",
+                max_plus_one
+            ),
+            err.unwrap_err().to_string(),
+        );
 
         Ok(())
     }
