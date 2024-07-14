@@ -9,7 +9,7 @@ use std::sync::Arc;
 use super::sequila_physical_planner::SeQuiLaPhysicalPlanner;
 
 #[derive(Debug, Default)]
-pub struct SeQuiLaQueryPlanner {}
+pub struct SeQuiLaQueryPlanner;
 
 #[async_trait]
 impl QueryPlanner for SeQuiLaQueryPlanner {

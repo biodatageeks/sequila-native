@@ -7,8 +7,17 @@ repository = "https://github.com/biodatageeks/sequila-native.git"
 version = "0.1.0"
 
 [workspace]
-members = [
-    "sequila/sequila-cli", "sequila/sequila-core"
-    ]
+members = ["sequila/sequila-cli", "sequila/sequila-core"]
 resolver = "2"
 
+[workspace.dependencies]
+sequila-core = { path = "sequila/sequila-core" }
+sequila-cli = { path = "sequila/sequila-cli" }
+
+datafusion = "39.0.0"
+datafusion-cli = "39.0.0"
+tokio = { version = "1.36.0", features = ["rt-multi-thread"] }
+env_logger = "0.11.1"
+log = "0.4.21"
+arrow = "52.0.0"
+emojis = "0.6.1"

@@ -1,6 +1,8 @@
 use crate::physical_planner::RangeJoinPhysicalOptimizationRule;
 use crate::physical_planner::SeQuiLaQueryPlanner;
 use async_trait::async_trait;
+use datafusion::common::extensions_options;
+use datafusion::config::ConfigExtension;
 use datafusion::execution::context::SessionState;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::prelude::{SessionConfig, SessionContext};
@@ -21,6 +23,7 @@ impl SeQuiLaSessionExt for SessionContext {
         let runtime = Arc::new(RuntimeEnv::default());
         Self::with_config_rt_sequila(config, runtime)
     }
+
     fn with_config_rt_sequila(config: SessionConfig, runtime: Arc<RuntimeEnv>) -> SessionContext {
         let state = SessionState::new_with_config_rt(config, runtime);
         let ctx = SessionContext::new_with_state(
@@ -34,4 +37,14 @@ impl SeQuiLaSessionExt for SessionContext {
         info!("Initialized SeQuiLaQueryPlanner {hammer}...");
         ctx
     }
+}
+
+extensions_options! {
+    pub struct SequilaConfig {
+        pub prefer_interval_join: bool, default = false
+    }
+}
+
+impl ConfigExtension for SequilaConfig {
+    const PREFIX: &'static str = "sequila";
 }
