@@ -1,4 +1,4 @@
-use crate::physical_planner::interval_join::{parse_intervals, IntervalJoinExec};
+use crate::physical_planner::joins::interval_join::{parse_intervals, IntervalJoinExec};
 use crate::session_context::SequilaConfig;
 use async_trait::async_trait;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
@@ -21,9 +21,9 @@ pub struct SeQuiLaPhysicalPlanner {
 }
 
 #[derive(Debug, Default)]
-pub struct RangeJoinPhysicalOptimizationRule;
+pub struct IntervalJoinPhysicalOptimizationRule;
 
-impl PhysicalOptimizerRule for RangeJoinPhysicalOptimizationRule {
+impl PhysicalOptimizerRule for IntervalJoinPhysicalOptimizationRule {
     fn optimize(
         &self,
         plan: Arc<dyn ExecutionPlan>,
@@ -46,8 +46,6 @@ impl PhysicalOptimizerRule for RangeJoinPhysicalOptimizationRule {
                 Some(join_exec) => {
                     if let Some(intervals) = join_exec.filter().and_then(parse_intervals) {
                         info!("Detected HashJoinExec with Range filters. Optimizing into IntervalSearchJoin...");
-                        println!("Detected HashJoinExec with Range filters. Optimizing into IntervalSearchJoin...");
-                        // info!("Join {:#?}", join_exec);
                         let new_plan = IntervalJoinExec::try_new(
                             join_exec.left().clone(),
                             join_exec.right().clone(),
@@ -71,7 +69,7 @@ impl PhysicalOptimizerRule for RangeJoinPhysicalOptimizationRule {
     }
 
     fn name(&self) -> &str {
-        "RangeJoinOptimizationRule"
+        "IntervalJoinOptimizationRule"
     }
 
     fn schema_check(&self) -> bool {
