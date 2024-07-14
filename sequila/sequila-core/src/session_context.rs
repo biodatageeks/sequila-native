@@ -1,4 +1,4 @@
-use crate::physical_planner::RangeJoinPhysicalOptimizationRule;
+use crate::physical_planner::IntervalJoinPhysicalOptimizationRule;
 use crate::physical_planner::SeQuiLaQueryPlanner;
 use async_trait::async_trait;
 use datafusion::common::extensions_options;
@@ -29,9 +29,9 @@ impl SeQuiLaSessionExt for SessionContext {
         let ctx = SessionContext::new_with_state(
             state
                 .with_query_planner(Arc::new(SeQuiLaQueryPlanner::default()))
-                .add_physical_optimizer_rule(
-                    Arc::new(RangeJoinPhysicalOptimizationRule::default()),
-                ),
+                .add_physical_optimizer_rule(Arc::new(
+                    IntervalJoinPhysicalOptimizationRule::default(),
+                )),
         );
         let hammer = emojis::get_by_shortcode("hammer_and_wrench").unwrap();
         info!("Initialized SeQuiLaQueryPlanner {hammer}...");
