@@ -1,4 +1,5 @@
 use std::any::Any;
+use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Debug;
 use std::mem::size_of;
@@ -40,11 +41,11 @@ use crate::physical_planner::joins::utils::{
     estimate_join_statistics, BuildProbeJoinMetrics, OnceAsync, OnceFut,
 };
 
-type Metadata = usize;
+type Position = usize;
 
 pub struct IntervalJoinHashMap {
     // Stores hash value to last row index
-    map: FnvHashMap<u64, COITree<Metadata, u32>>,
+    map: FnvHashMap<u64, COITree<Position, u32>>,
 }
 
 impl Debug for IntervalJoinHashMap {
@@ -59,7 +60,7 @@ impl Debug for IntervalJoinHashMap {
 }
 
 impl IntervalJoinHashMap {
-    pub fn new(map: FnvHashMap<u64, COITree<Metadata, u32>>) -> Self {
+    pub fn new(map: FnvHashMap<u64, COITree<Position, u32>>) -> Self {
         Self { map }
     }
 
@@ -647,7 +648,7 @@ async fn collect_left_input(
     reservation.try_grow(estimated_hastable_size)?;
     metrics.build_mem_used.add(estimated_hastable_size);
 
-    let mut hashmap = std::collections::HashMap::<u64, Vec<Interval<Metadata>>>::new();
+    let mut hashmap = HashMap::<u64, Vec<Interval<Position>>>::new();
     let mut hashes_buffer = Vec::new();
     let mut offset = 0;
 
@@ -671,7 +672,7 @@ async fn collect_left_input(
     let hashmap = hashmap
         .iter()
         .map(|(k, v)| (*k, COITree::new(v)))
-        .collect::<FnvHashMap<u64, COITree<Metadata, u32>>>();
+        .collect::<FnvHashMap<u64, COITree<Position, u32>>>();
 
     let hashmap = IntervalJoinHashMap::new(hashmap);
     let single_batch = concat_batches(&schema, &batches)?;
@@ -684,7 +685,7 @@ fn update_hashmap(
     on: &[PhysicalExprRef],
     left_interval: &ColInterval,
     batch: &RecordBatch,
-    hash_map: &mut std::collections::HashMap<u64, Vec<Interval<Metadata>>>,
+    hash_map: &mut HashMap<u64, Vec<Interval<Position>>>,
     offset: usize,
     random_state: &RandomState,
     hashes_buffer: &mut Vec<u64>,
