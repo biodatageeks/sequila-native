@@ -7,6 +7,7 @@ use datafusion::execution::context::SessionState;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use log::info;
+use std::str::FromStr;
 use std::sync::Arc;
 
 /// Extension trait for [`SessionContext`] that adds Exon-specific functionality.
@@ -42,9 +43,57 @@ impl SeQuiLaSessionExt for SessionContext {
 extensions_options! {
     pub struct SequilaConfig {
         pub prefer_interval_join: bool, default = false
+        pub interval_join_algorithm: Algorithm, default = Algorithm::default()
     }
 }
 
 impl ConfigExtension for SequilaConfig {
     const PREFIX: &'static str = "sequila";
+}
+
+#[derive(Debug, Eq, PartialEq, Default, Clone)]
+enum Algorithm {
+    #[default]
+    Coitrees,
+    IntervalTree,
+    ArrayIntervalTree,
+}
+
+#[derive(Debug)]
+struct ParseAlgorithmError(String);
+
+impl std::fmt::Display for ParseAlgorithmError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for ParseAlgorithmError {}
+
+impl FromStr for Algorithm {
+    type Err = ParseAlgorithmError;
+
+    #[inline]
+    fn from_str(s: &str) -> Result<Algorithm, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "coitrees" => Ok(Algorithm::Coitrees),
+            "intervaltree" => Ok(Algorithm::IntervalTree),
+            "arrayintervaltree" => Ok(Algorithm::ArrayIntervalTree),
+            _ => Err(ParseAlgorithmError(format!(
+                "Can't parse '{}' as Algorithm",
+                s
+            ))),
+        }
+    }
+}
+
+impl std::fmt::Display for Algorithm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let val = match self {
+            Algorithm::Coitrees => "Coitrees",
+            Algorithm::IntervalTree => "IntervalTree",
+            Algorithm::ArrayIntervalTree => "ArrayIntervalTree",
+        };
+        write!(f, "{}", val)
+    }
 }
