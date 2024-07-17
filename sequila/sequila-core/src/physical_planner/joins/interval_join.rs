@@ -69,6 +69,14 @@ impl IntervalJoinHashMap {
             map: FnvHashMap::with_capacity_and_hasher(capacity, Default::default()),
         }
     }
+
+    pub(crate) fn get<F>(&self, k: u64, start: i32, end: i32, mut f: F) -> () where F: FnMut(u32) -> () {
+        self.map.get(&k).map(|tree| {
+            tree.query(start, end, |node| {
+                f(node.metadata as u32)
+            });
+        });
+    }
 }
 
 #[derive(Debug)]
@@ -802,12 +810,10 @@ impl IntervalJoinStream {
                     let mut right_builder = UInt32BufferBuilder::new(0);
 
                     for (i, hash_val) in hashes_buffer.into_iter().enumerate() {
-                        left_data.hash_map.map.get(&hash_val).map(|tree| {
-                            tree.query(start.value(i), end.value(i), |node| {
-                                left_builder.append(node.metadata as u32);
-                                right_builder.append(i as u32);
-                            });
-                        });
+                        left_data.hash_map.get(hash_val, start.value(i), end.value(i), |pos| {
+                            left_builder.append(pos);
+                            right_builder.append(i as u32);
+                        })
                     }
 
                     let left_indexes: UInt32Array =
@@ -970,7 +976,7 @@ fn evaluate_as_i32(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_context::{SeQuiLaSessionExt, SequilaConfig};
+    use crate::session_context::{SeQuiLaSessionExt, SequilaConfig, Algorithm};
     use datafusion::arrow::datatypes::{DataType, Field};
     use datafusion::assert_batches_sorted_eq;
     use datafusion::config::ConfigOptions;
@@ -985,6 +991,7 @@ mod tests {
 
         let sequila_config = SequilaConfig {
             prefer_interval_join: true,
+            interval_join_algorithm: Algorithm::default(),
         };
 
         let config = SessionConfig::from(options)
