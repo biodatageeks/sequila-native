@@ -30,13 +30,10 @@ impl PhysicalOptimizerRule for IntervalJoinPhysicalOptimizationRule {
         config: &ConfigOptions,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         info!("Applying {}...", self.name());
-        let prefer_interval_join = config
-            .extensions
-            .get::<SequilaConfig>()
-            .map(|c| c.prefer_interval_join)
-            .unwrap_or(false);
+        let default = SequilaConfig::default();
+        let sequila_config = config.extensions.get::<SequilaConfig>().unwrap_or(&default);
 
-        if (!prefer_interval_join) {
+        if (!sequila_config.prefer_interval_join) {
             return Ok(plan);
         }
 
@@ -46,6 +43,7 @@ impl PhysicalOptimizerRule for IntervalJoinPhysicalOptimizationRule {
                 Some(join_exec) => {
                     if let Some(intervals) = join_exec.filter().and_then(parse_intervals) {
                         info!("Detected HashJoinExec with Range filters. Optimizing into IntervalSearchJoin...");
+                        info!("sequila_config: {sequila_config:?}");
                         let new_plan = IntervalJoinExec::try_new(
                             join_exec.left().clone(),
                             join_exec.right().clone(),
@@ -56,10 +54,12 @@ impl PhysicalOptimizerRule for IntervalJoinPhysicalOptimizationRule {
                             join_exec.projection.clone(),
                             join_exec.partition_mode().clone(),
                             join_exec.null_equals_null,
+                            sequila_config.interval_join_algorithm.clone(),
                         )?;
 
                         Ok(Transformed::yes(Arc::new(new_plan)))
                     } else {
+                        info!("{} was not applied", self.name());
                         Ok(Transformed::no(plan))
                     }
                 },
