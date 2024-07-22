@@ -1,15 +1,20 @@
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
-use std::fmt::Debug;
+use std::fmt::{Debug, Formatter};
 use std::mem::size_of;
 use std::sync::Arc;
 use std::task::Poll;
 
+use crate::physical_planner::joins::utils::{
+    estimate_join_statistics, BuildProbeJoinMetrics, OnceAsync, OnceFut,
+};
+use crate::session_context::Algorithm;
 use ahash::RandomState;
 use arrow::array::{Array, AsArray, PrimitiveArray, RecordBatch, UInt32Array, UInt32BufferBuilder};
 use arrow::compute::concat_batches;
 use arrow::datatypes::{DataType, Schema, SchemaRef};
+use bio::data_structures::interval_tree as rust_bio;
 use coitrees::{COITree, Interval, IntervalTree};
 use datafusion::common::hash_utils::create_hashes;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
@@ -37,51 +42,11 @@ use datafusion::physical_plan::{
 use fnv::FnvHashMap;
 use futures::{ready, Stream, StreamExt, TryStreamExt};
 
-use crate::physical_planner::joins::utils::{
-    estimate_join_statistics, BuildProbeJoinMetrics, OnceAsync, OnceFut,
-};
-
 type Position = usize;
-
-pub struct IntervalJoinHashMap {
-    // Stores hash value to last row index
-    map: FnvHashMap<u64, COITree<Position, u32>>,
-}
-
-impl Debug for IntervalJoinHashMap {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let x = self
-            .map
-            .iter()
-            .map(|(key, val)| (key, val.iter().collect::<Vec<_>>()));
-
-        f.debug_map().entries(x.into_iter()).finish()
-    }
-}
-
-impl IntervalJoinHashMap {
-    pub fn new(map: FnvHashMap<u64, COITree<Position, u32>>) -> Self {
-        Self { map }
-    }
-
-    pub(crate) fn with_capacity(capacity: usize) -> Self {
-        Self {
-            map: FnvHashMap::with_capacity_and_hasher(capacity, Default::default()),
-        }
-    }
-
-    pub(crate) fn get<F>(&self, k: u64, start: i32, end: i32, mut f: F) -> () where F: FnMut(u32) -> () {
-        self.map.get(&k).map(|tree| {
-            tree.query(start, end, |node| {
-                f(node.metadata as u32)
-            });
-        });
-    }
-}
 
 #[derive(Debug)]
 struct JoinLeftData {
-    hash_map: IntervalJoinHashMap,
+    hash_map: IntervalJoinAlgorithm,
     batch: RecordBatch,
     #[allow(dead_code)]
     reservation: MemoryReservation,
@@ -89,7 +54,7 @@ struct JoinLeftData {
 
 impl JoinLeftData {
     fn new(
-        hash_map: IntervalJoinHashMap,
+        hash_map: IntervalJoinAlgorithm,
         batch: RecordBatch,
         reservation: MemoryReservation,
     ) -> Self {
@@ -136,6 +101,8 @@ pub struct IntervalJoinExec {
     pub null_equals_null: bool,
 
     cache: PlanProperties,
+
+    algorithm: Algorithm,
 }
 
 impl IntervalJoinExec {
@@ -149,6 +116,7 @@ impl IntervalJoinExec {
         projection: Option<Vec<usize>>,
         partition_mode: PartitionMode,
         null_equals_null: bool,
+        algorithm: Algorithm,
     ) -> datafusion::common::Result<Self> {
         let left_schema = left.schema();
         let right_schema = right.schema();
@@ -194,6 +162,7 @@ impl IntervalJoinExec {
             column_indices,
             null_equals_null,
             cache,
+            algorithm,
         })
     }
 
@@ -275,6 +244,7 @@ impl IntervalJoinExec {
             projection,
             self.mode,
             self.null_equals_null,
+            self.algorithm.clone(),
         )
     }
 
@@ -478,6 +448,7 @@ impl ExecutionPlan for IntervalJoinExec {
             self.projection.clone(),
             self.mode,
             self.null_equals_null,
+            self.algorithm.clone(),
         )?))
     }
 
@@ -514,6 +485,7 @@ impl ExecutionPlan for IntervalJoinExec {
                     join_metrics.clone(),
                     reservation,
                     left_interval,
+                    self.algorithm.clone(),
                 )
             }),
             PartitionMode::Partitioned => {
@@ -529,6 +501,7 @@ impl ExecutionPlan for IntervalJoinExec {
                     join_metrics.clone(),
                     reservation,
                     left_interval,
+                    self.algorithm.clone(),
                 ))
             }
             PartitionMode::Auto => {
@@ -601,6 +574,7 @@ async fn collect_left_input(
     metrics: BuildProbeJoinMetrics,
     reservation: MemoryReservation,
     left_interval: ColInterval,
+    algorithm: Algorithm,
 ) -> datafusion::common::Result<JoinLeftData> {
     let schema = left.schema();
 
@@ -651,12 +625,12 @@ async fn collect_left_input(
     // + 1 byte for each bucket
     // + fixed size of JoinHashMap (RawTable + Vec)
     let estimated_hastable_size =
-        16 * estimated_buckets + estimated_buckets + size_of::<IntervalJoinHashMap>();
+        16 * estimated_buckets + estimated_buckets + size_of::<IntervalJoinAlgorithm>();
 
     reservation.try_grow(estimated_hastable_size)?;
     metrics.build_mem_used.add(estimated_hastable_size);
 
-    let mut hashmap = HashMap::<u64, Vec<Interval<Position>>>::new();
+    let mut hashmap = HashMap::<u64, Vec<Trio>>::new();
     let mut hashes_buffer = Vec::new();
     let mut offset = 0;
 
@@ -677,23 +651,122 @@ async fn collect_left_input(
         offset += batch.num_rows();
     }
 
-    let hashmap = hashmap
-        .iter()
-        .map(|(k, v)| (*k, COITree::new(v)))
-        .collect::<FnvHashMap<u64, COITree<Position, u32>>>();
+    let hashmap = IntervalJoinAlgorithm::new(&algorithm, &hashmap);
 
-    let hashmap = IntervalJoinHashMap::new(hashmap);
     let single_batch = concat_batches(&schema, &batches)?;
     let data = JoinLeftData::new(hashmap, single_batch, reservation);
 
     Ok(data)
 }
 
+// start, end, position
+type Trio = (i32, i32, Position);
+
+enum IntervalJoinAlgorithm {
+    Coitrees(FnvHashMap<u64, COITree<Position, u32>>),
+    IntervalTree(FnvHashMap<u64, rust_bio::IntervalTree<i32, Position>>),
+    ArrayIntervalTree(FnvHashMap<u64, rust_bio::ArrayBackedIntervalTree<i32, Position>>),
+}
+
+impl Debug for IntervalJoinAlgorithm {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            IntervalJoinAlgorithm::Coitrees(m) => {
+                let q = m
+                    .iter()
+                    .map(|(key, val)| (*key, val.iter().collect::<Vec<_>>()))
+                    .collect::<HashMap<_, _>>();
+                f.debug_struct("Coitrees").field("0", &q).finish()
+            }
+            IntervalJoinAlgorithm::IntervalTree(m) => {
+                f.debug_struct("IntervalTree").field("0", m).finish()
+            }
+            IntervalJoinAlgorithm::ArrayIntervalTree(m) => {
+                f.debug_struct("ArrayIntervalTree").field("0", m).finish()
+            }
+        }
+    }
+}
+
+impl IntervalJoinAlgorithm {
+    fn new(alg: &Algorithm, hash_map: &HashMap<u64, Vec<Trio>>) -> IntervalJoinAlgorithm {
+        match alg {
+            Algorithm::Coitrees => {
+                let hashmap = hash_map
+                    .iter()
+                    .map(|(k, v)| {
+                        let vv = v
+                            .iter()
+                            .map(|(s, e, p)| Interval::new(*s, *e, *p))
+                            .collect::<Vec<Interval<Position>>>();
+                        let q: COITree<Position, u32> = COITree::new(&vv);
+                        (*k, q)
+                    })
+                    .collect::<FnvHashMap<u64, COITree<Position, u32>>>();
+
+                IntervalJoinAlgorithm::Coitrees(hashmap)
+            }
+            Algorithm::IntervalTree => {
+                let d = hash_map
+                    .iter()
+                    .map(|(k, v)| {
+                        let mut tree = rust_bio::IntervalTree::from_iter(
+                            v.iter().map(|(s, e, p)| (*s..*e + 1, *p)),
+                        );
+                        (*k, tree)
+                    })
+                    .collect::<FnvHashMap<u64, rust_bio::IntervalTree<i32, Position>>>();
+                IntervalJoinAlgorithm::IntervalTree(d)
+            }
+            Algorithm::ArrayIntervalTree => {
+                let d = hash_map
+                    .iter()
+                    .map(|(k, v)| {
+                        let v = v.iter().map(|(s, e, p)| (*s..*e + 1, *p));
+                        let mut tree =
+                            rust_bio::ArrayBackedIntervalTree::<i32, Position>::from_iter(v);
+                        (*k, tree)
+                    })
+                    .collect::<FnvHashMap<u64, rust_bio::ArrayBackedIntervalTree<i32, Position>>>();
+
+                IntervalJoinAlgorithm::ArrayIntervalTree(d)
+            }
+        }
+    }
+
+    fn get<F>(&self, k: u64, start: i32, end: i32, mut f: F) -> ()
+    where
+        F: FnMut(u32) -> (),
+    {
+        match self {
+            IntervalJoinAlgorithm::Coitrees(hashmap) => {
+                hashmap.get(&k).map(|tree| {
+                    tree.query(start, end, |node| f(node.metadata as u32));
+                });
+            }
+            IntervalJoinAlgorithm::IntervalTree(map) => {
+                map.get(&k).map(|tree| {
+                    for x in tree.find(start..end + 1) {
+                        f(*x.data() as u32)
+                    }
+                });
+            }
+            IntervalJoinAlgorithm::ArrayIntervalTree(map) => {
+                map.get(&k).map(|tree| {
+                    for x in tree.find(start..end + 1) {
+                        f(*x.data() as u32)
+                    }
+                });
+            }
+        }
+    }
+}
+
 fn update_hashmap(
     on: &[PhysicalExprRef],
     left_interval: &ColInterval,
     batch: &RecordBatch,
-    hash_map: &mut HashMap<u64, Vec<Interval<Position>>>,
+    hash_map: &mut HashMap<u64, Vec<Trio>>,
     offset: usize,
     random_state: &RandomState,
     hashes_buffer: &mut Vec<u64>,
@@ -718,7 +791,7 @@ fn update_hashmap(
         let (position, hash_val) = hash_values_iter[i];
         let intervals = hash_map.entry(*hash_val).or_insert(Vec::new());
 
-        intervals.push(Interval::new(start.value(i), end.value(i), position))
+        intervals.push((start.value(i), end.value(i), position))
     }
 
     Ok(())
@@ -810,10 +883,12 @@ impl IntervalJoinStream {
                     let mut right_builder = UInt32BufferBuilder::new(0);
 
                     for (i, hash_val) in hashes_buffer.into_iter().enumerate() {
-                        left_data.hash_map.get(hash_val, start.value(i), end.value(i), |pos| {
-                            left_builder.append(pos);
-                            right_builder.append(i as u32);
-                        })
+                        left_data
+                            .hash_map
+                            .get(hash_val, start.value(i), end.value(i), |pos| {
+                                left_builder.append(pos);
+                                right_builder.append(i as u32);
+                            })
                     }
 
                     let left_indexes: UInt32Array =
@@ -976,7 +1051,7 @@ fn evaluate_as_i32(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_context::{SeQuiLaSessionExt, SequilaConfig, Algorithm};
+    use crate::session_context::{Algorithm, SeQuiLaSessionExt, SequilaConfig};
     use datafusion::arrow::datatypes::{DataType, Field};
     use datafusion::assert_batches_sorted_eq;
     use datafusion::config::ConfigOptions;
@@ -1047,7 +1122,15 @@ mod tests {
                 // a.column2 >= b.column1 AND a.column1 <= b.column2
                 on_expr,
             )?
-            .repartition(datafusion::logical_expr::Partitioning::RoundRobinBatch(1))?;
+            .repartition(datafusion::logical_expr::Partitioning::RoundRobinBatch(1))?
+            .sort(vec![
+                col("reads_contig").sort(true, true),
+                col("reads_pos_start").sort(true, true),
+                col("reads_pos_end").sort(true, true),
+                col("target_contig").sort(true, true),
+                col("target_pos_start").sort(true, true),
+                col("target_pos_end").sort(true, true),
+            ])?;
 
         let x = res.clone().create_physical_plan().await?;
         // println!("execution_plan = {:?}", x);
@@ -1069,16 +1152,16 @@ mod tests {
             "| reads_contig | reads_pos_start | reads_pos_end | target_contig | target_pos_start | target_pos_end |",
             "+--------------+-----------------+---------------+---------------+------------------+----------------+",
             "| chr1         | 150             | 250           | chr1          | 100              | 190            |",
-            "| chr1         | 190             | 300           | chr1          | 100              | 190            |",
             "| chr1         | 150             | 250           | chr1          | 200              | 290            |",
+            "| chr1         | 190             | 300           | chr1          | 100              | 190            |",
             "| chr1         | 190             | 300           | chr1          | 200              | 290            |",
             "| chr1         | 300             | 501           | chr1          | 400              | 600            |",
             "| chr1         | 500             | 700           | chr1          | 400              | 600            |",
             "| chr1         | 15000           | 15000         | chr1          | 10000            | 20000          |",
             "| chr1         | 22000           | 22300         | chr1          | 22100            | 22100          |",
             "| chr2         | 150             | 250           | chr2          | 100              | 190            |",
-            "| chr2         | 190             | 300           | chr2          | 100              | 190            |",
             "| chr2         | 150             | 250           | chr2          | 200              | 290            |",
+            "| chr2         | 190             | 300           | chr2          | 100              | 190            |",
             "| chr2         | 190             | 300           | chr2          | 200              | 290            |",
             "| chr2         | 300             | 500           | chr2          | 400              | 600            |",
             "| chr2         | 500             | 700           | chr2          | 400              | 600            |",
