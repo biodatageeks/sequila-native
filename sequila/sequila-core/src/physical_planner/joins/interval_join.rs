@@ -709,7 +709,7 @@ fn update_hashmap(
         let (position, hash_val) = hash_values_iter[i];
         let intervals = hash_map.entry(*hash_val).or_insert(Vec::new());
 
-        intervals.push(Interval::new(start.value(i), end.value(i), position))
+        intervals.push(Interval::new(start.value(i), end.value(i), position as Metadata))
     }
 
     Ok(())
@@ -803,7 +803,7 @@ impl IntervalJoinStream {
                     for (i, hash_val) in hashes_buffer.into_iter().enumerate() {
                         left_data.hash_map.map.get(&hash_val).map(|tree| {
                             tree.query(start.value(i), end.value(i), |node| {
-                                left_builder.append(node.metadata as u32);
+                                left_builder.append(*node.metadata as u32);
                                 right_builder.append(i as u32);
                             });
                         });
