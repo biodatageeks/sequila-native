@@ -8,7 +8,7 @@ use datafusion_cli::print_options::PrintOptions;
 use log::info;
 use sequila_core::session_context::{SeQuiLaSessionExt, SequilaConfig};
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
     env_logger::init();
     let mut options = ConfigOptions::new();
@@ -42,8 +42,7 @@ async fn test_interval_rule_eq() -> datafusion::error::Result<()> {
     ctx.sql(sql).await.unwrap();
     let df = ctx
         .sql(
-            "SELECT COUNT(*) FROM target a JOIN read b ON a.contig = b.contig \
-           AND a.pos_end >= b.pos_start AND a.pos_start <= b.pos_end",
+            "SELECT COUNT(*) FROM target a JOIN read b ON a.contig = b.contig AND a.pos_end >= b.pos_start AND a.pos_start <= b.pos_end",
         )
         .await?;
     df.show().await?;

@@ -1,4 +1,4 @@
 #![allow(warnings)]
 pub mod session_context;
 
-mod physical_planner;
+pub mod physical_planner;

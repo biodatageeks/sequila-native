@@ -52,7 +52,7 @@ impl ConfigExtension for SequilaConfig {
 }
 
 #[derive(Debug, Eq, PartialEq, Default, Clone)]
-pub(crate) enum Algorithm {
+pub enum Algorithm {
     #[default]
     Coitrees,
     IntervalTree,
@@ -60,7 +60,7 @@ pub(crate) enum Algorithm {
 }
 
 #[derive(Debug)]
-pub(crate) struct ParseAlgorithmError(String);
+pub struct ParseAlgorithmError(String);
 
 impl std::fmt::Display for ParseAlgorithmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

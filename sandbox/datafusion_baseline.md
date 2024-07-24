@@ -1,4 +1,73 @@
- ## Only chr1
+# Update 22.07.2024
+
+## SeQuiLa
+```
++---------+
+| count(1)|
++---------+
+|154374873|
++---------+
+
+Time taken: 32912 ms
+
+```
+
+## Duckdb
+```
+.timer on
+PRAGMA threads=1;
+PRAGMA prefer_range_joins=true;
+D SELECT count(*) FROM read_csv('/Users/mwiewior/CLionProjects/sequila-native/sandbox/chainRn4_chr1.csv') a, read_csv('/Users/mwiewior/CLionProjects/sequila-native/sandbox/chainVicPac2_chr1.csv') b where (a.column0=b.column0 and a.column2>=b.column1 and a.column1<=b.column2);
+┌──────────────┐
+│ count_star() │
+│    int64     │
+├──────────────┤
+│    154374873 │
+└──────────────┘
+Run Time (s): real 1.967 user 1.948447 sys 0.015313
+```
+
+## SeQuiLa-native
+```
+set datafusion.execution.target_partitions=1;
+set sequila.prefer_interval_join to true;
+set sequila.interval_join_algorithm to 'coitrees';
+
+CREATE EXTERNAL TABLE chainRn4_chr1
+STORED AS CSV
+LOCATION '/Users/mwiewior/CLionProjects/sequila-native/sandbox/chainRn4_chr1.csv'
+OPTIONS ('has_header' 'true', 'format.delimiter' '\t' );
+
+CREATE EXTERNAL TABLE chainVicPac2_chr1
+STORED AS CSV
+LOCATION '/Users/mwiewior/CLionProjects/sequila-native/sandbox/chainVicPac2_chr1.csv'
+OPTIONS ('has_header' 'true', 'format.delimiter' '\t' );
+
+select count(*) from `chainRn4_chr1` a, `chainVicPac2_chr1` b where (a.column0=b.column0 and a.column2>=b.column1 and a.column1<=b.column2);
+
+[2024-07-22T17:28:36Z INFO  sequila_core::physical_planner::sequila_physical_planner] sequila_config: SequilaConfig { prefer_interval_join: true, interval_join_algorithm: Coitrees }
++-----------+
+| COUNT(*)  |
++-----------+
+| 154374873 |
++-----------+
+1 row(s) fetched. 
+Elapsed 2.457 seconds.
+
+
+[2024-07-22T17:29:32Z INFO  sequila_core::physical_planner::sequila_physical_planner] sequila_config: SequilaConfig { prefer_interval_join: true, interval_join_algorithm: ArrayIntervalTree }
++-----------+
+| COUNT(*)  |
++-----------+
+| 154374873 |
++-----------+
+1 row(s) fetched. 
+Elapsed 2.705 seconds.
+```
+
+
+
+## Only chr1
 ```
 set datafusion.execution.target_partitions=1;
 
@@ -33,11 +102,12 @@ so the join is only on the first column, but the filter is on the second and thi
 
 CREATE EXTERNAL TABLE test
 STORED AS PARQUET
-LOCATION '/Users/mwiewior/research/data/AIListTestData/chainXenTro3Link.parquet';
+LOCATION '/Users/mwiewior/CLionProjects/sequila-native/sandbox/chainXenTro3Link.parquet';
        
 CREATE EXTERNAL TABLE test2
 STORED AS PARQUET
-LOCATION '/Users/mwiewior/research/data/AIListTestData/chainXenTro3Link.parquet';
+LOCATION '/Users/mwiewior/CLionProjects/sequila-native/sandbox/chainXenTro3Link.parquet';
 
-explain select count(*) from test a join test2 b on a._c0=b._c0;
+explain select count(*) from test a, test2 b where (a._c0=b._c0 and a._c2>=b._c1 and a._c1<=b._c2);
 ```
+

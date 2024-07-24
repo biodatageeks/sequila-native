@@ -28,10 +28,10 @@ use datafusion::common::{DataFusionError, JoinType, Result, SharedResult};
 use datafusion::logical_expr::interval_arithmetic::Interval;
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_plan::joins::utils::JoinOn;
+use datafusion::physical_plan::joins::utils::{adjust_right_output_partitioning, JoinOn};
 use datafusion::physical_plan::metrics::{self, ExecutionPlanMetricsSet, MetricBuilder};
-use datafusion::physical_plan::ExecutionPlanProperties;
 use datafusion::physical_plan::{ColumnStatistics, ExecutionMode, ExecutionPlan, Statistics};
+use datafusion::physical_plan::{ExecutionPlanProperties, Partitioning};
 use futures::future::{BoxFuture, Shared};
 use futures::{ready, FutureExt};
 use parking_lot::Mutex;
@@ -475,6 +475,26 @@ impl BuildProbeJoinMetrics {
             input_rows,
             output_batches,
             output_rows,
+        }
+    }
+}
+pub(crate) fn symmetric_join_output_partitioning(
+    left: &Arc<dyn ExecutionPlan>,
+    right: &Arc<dyn ExecutionPlan>,
+    join_type: &JoinType,
+) -> Partitioning {
+    let left_columns_len = left.schema().fields.len();
+    let left_partitioning = left.output_partitioning();
+    let right_partitioning = right.output_partitioning();
+    match join_type {
+        JoinType::Left | JoinType::LeftSemi | JoinType::LeftAnti => left_partitioning.clone(),
+        JoinType::RightSemi | JoinType::RightAnti => right_partitioning.clone(),
+        JoinType::Inner | JoinType::Right => {
+            adjust_right_output_partitioning(right_partitioning, left_columns_len)
+        }
+        JoinType::Full => {
+            // We could also use left partition count as they are necessarily equal.
+            Partitioning::UnknownPartitioning(right_partitioning.partition_count())
         }
     }
 }

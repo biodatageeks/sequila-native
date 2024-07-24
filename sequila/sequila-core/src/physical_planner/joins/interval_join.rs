@@ -6,6 +6,7 @@ use std::mem::size_of;
 use std::sync::Arc;
 use std::task::Poll;
 
+use crate::physical_planner::joins::utils::symmetric_join_output_partitioning;
 use crate::physical_planner::joins::utils::{
     estimate_join_statistics, BuildProbeJoinMetrics, OnceAsync, OnceFut,
 };
@@ -30,8 +31,8 @@ use datafusion::physical_expr::{Distribution, Partitioning, PhysicalExpr, Physic
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::common::can_project;
 use datafusion::physical_plan::joins::utils::{
-    adjust_right_output_partitioning, build_join_schema, check_join_is_valid,
-    partitioned_join_output_partitioning, ColumnIndex, JoinFilter, JoinOn, JoinOnRef,
+    adjust_right_output_partitioning, build_join_schema, check_join_is_valid, ColumnIndex,
+    JoinFilter, JoinOn, JoinOnRef,
 };
 use datafusion::physical_plan::joins::PartitionMode;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
@@ -41,7 +42,6 @@ use datafusion::physical_plan::{
 };
 use fnv::FnvHashMap;
 use futures::{ready, Stream, StreamExt, TryStreamExt};
-
 type Position = usize;
 
 #[derive(Debug)]
@@ -281,12 +281,9 @@ impl IntervalJoinExec {
                     Partitioning::UnknownPartitioning(right.output_partitioning().partition_count())
                 }
             },
-            PartitionMode::Partitioned => partitioned_join_output_partitioning(
-                join_type,
-                left.output_partitioning(),
-                right.output_partitioning(),
-                left_columns_len,
-            ),
+            PartitionMode::Partitioned => {
+                symmetric_join_output_partitioning(left, right, &join_type)
+            }
             PartitionMode::Auto => {
                 Partitioning::UnknownPartitioning(right.output_partitioning().partition_count())
             }
@@ -378,7 +375,7 @@ impl DisplayAs for IntervalJoinExec {
 
 impl ExecutionPlan for IntervalJoinExec {
     fn name(&self) -> &'static str {
-        "HashJoinExec"
+        "IntervalJoinExec"
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -741,7 +738,7 @@ impl IntervalJoinAlgorithm {
         match self {
             IntervalJoinAlgorithm::Coitrees(hashmap) => {
                 hashmap.get(&k).map(|tree| {
-                    tree.query(start, end, |node| f(node.metadata as u32));
+                    tree.query(start, end, |node| f(*node.metadata as u32));
                 });
             }
             IntervalJoinAlgorithm::IntervalTree(map) => {
@@ -997,7 +994,7 @@ fn get_with_source_index(
 }
 
 //TODO Add support for datatype, currently expected to be Int64
-pub(crate) fn parse_intervals(filter: &JoinFilter) -> Option<(ColInterval, ColInterval)> {
+pub fn parse_intervals(filter: &JoinFilter) -> Option<(ColInterval, ColInterval)> {
     let expr = filter.expression().to_binary()?;
     if matches!(expr.op(), Operator::And) {
         let left = expr.left().to_binary()?;
