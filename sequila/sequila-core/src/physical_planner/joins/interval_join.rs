@@ -365,8 +365,12 @@ impl DisplayAs for IntervalJoinExec {
                     .join(", ");
                 write!(
                     f,
-                    "IntervalJoinExec: mode={:?}, join_type={:?}, on=[{}]{}",
-                    self.mode, self.join_type, on, display_filter
+                    "IntervalJoinExec: mode={:?}, join_type={:?}, on=[{}]{}, alg={}",
+                    self.mode,
+                    self.join_type,
+                    on,
+                    display_filter,
+                    self.algorithm.clone()
                 )
             }
         }
@@ -663,6 +667,7 @@ enum IntervalJoinAlgorithm {
     Coitrees(FnvHashMap<u64, COITree<Position, u32>>),
     IntervalTree(FnvHashMap<u64, rust_bio::IntervalTree<i32, Position>>),
     ArrayIntervalTree(FnvHashMap<u64, rust_bio::ArrayBackedIntervalTree<i32, Position>>),
+    AIList(FnvHashMap<u64, scailist::ScAIList<Position>>),
 }
 
 impl Debug for IntervalJoinAlgorithm {
@@ -681,6 +686,7 @@ impl Debug for IntervalJoinAlgorithm {
             IntervalJoinAlgorithm::ArrayIntervalTree(m) => {
                 f.debug_struct("ArrayIntervalTree").field("0", m).finish()
             }
+            IntervalJoinAlgorithm::AIList(m) => f.debug_struct("AIList").field("0", m).finish(),
         }
     }
 }
@@ -728,6 +734,25 @@ impl IntervalJoinAlgorithm {
 
                 IntervalJoinAlgorithm::ArrayIntervalTree(d)
             }
+            Algorithm::AIList => {
+                let d = hash_map
+                    .iter()
+                    .map(|(k, v)| {
+                        let intervals = v
+                            .iter()
+                            .map(|(s, e, p)| scailist::Interval {
+                                start: *s as u32,
+                                end: *e as u32 + 1,
+                                val: *p,
+                            })
+                            .collect::<Vec<scailist::Interval<Position>>>();
+
+                        (*k, scailist::ScAIList::new(intervals, None))
+                    })
+                    .collect::<FnvHashMap<u64, scailist::ScAIList<Position>>>();
+
+                IntervalJoinAlgorithm::AIList(d)
+            }
         }
     }
 
@@ -752,6 +777,13 @@ impl IntervalJoinAlgorithm {
                 map.get(&k).map(|tree| {
                     for x in tree.find(start..end + 1) {
                         f(*x.data() as u32)
+                    }
+                });
+            }
+            IntervalJoinAlgorithm::AIList(map) => {
+                map.get(&k).map(|list| {
+                    for x in list.find(start as u32, end as u32 + 1) {
+                        f(x.val as u32)
                     }
                 });
             }
@@ -1052,18 +1084,18 @@ mod tests {
     use datafusion::arrow::datatypes::{DataType, Field};
     use datafusion::assert_batches_sorted_eq;
     use datafusion::config::ConfigOptions;
-    use datafusion::prelude::{col, CsvReadOptions, DataFrame, SessionConfig, SessionContext};
+    use datafusion::prelude::{col, CsvReadOptions, SessionConfig, SessionContext};
     use datafusion::test_util::plan_and_collect;
 
     const READS_PATH: &str = "../../testing/data/interval/reads.csv";
     const TARGETS_PATH: &str = "../../testing/data/interval/targets.csv";
 
-    fn create_context() -> SessionContext {
+    fn create_context(algorithm: Algorithm) -> SessionContext {
         let options = ConfigOptions::new();
 
         let sequila_config = SequilaConfig {
             prefer_interval_join: true,
-            interval_join_algorithm: Algorithm::default(),
+            interval_join_algorithm: algorithm,
         };
 
         let config = SessionConfig::from(options)
@@ -1075,99 +1107,90 @@ mod tests {
         SessionContext::new_with_sequila(config)
     }
 
-    #[tokio::test]
-    async fn init() -> datafusion::common::Result<()> {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_all_interval_join_algorithms() -> Result<()> {
         let schema = Schema::new(vec![
             Field::new("contig", DataType::Utf8, false),
             Field::new("pos_start", DataType::Int32, false),
             Field::new("pos_end", DataType::Int64, false),
         ]);
 
-        let ctx = create_context();
-
-        let csv_options = CsvReadOptions::new()
-            .has_header(true)
-            .schema(&schema)
-            .file_extension("csv");
-        let reads: DataFrame = ctx.read_csv(READS_PATH, csv_options.clone()).await?;
-        let targets = ctx.read_csv(TARGETS_PATH, csv_options).await?;
-
-        let reads_renames = vec![
-            col("contig").alias("reads_contig"),
-            col("pos_start").alias("reads_pos_start"),
-            col("pos_end").alias("reads_pos_end"),
-            // cast(col("pos_start").alias("reads_pos_start"), DataType::Int64),
-        ];
-        let target_renames = vec![
-            col("contig").alias("target_contig"),
-            col("pos_start").alias("target_pos_start"),
-            col("pos_end").alias("target_pos_end"),
+        let algs = [
+            Algorithm::Coitrees,
+            Algorithm::IntervalTree,
+            Algorithm::ArrayIntervalTree,
+            Algorithm::AIList,
         ];
 
-        let on_expr = [
-            col("reads_contig").eq(col("target_contig")),
-            col("reads_pos_start").lt_eq(col("target_pos_end")),
-            // col("c2").gt(col("b1")),
-            col("reads_pos_end").gt_eq(col("target_pos_start")), // col("b2").lt(col("c1"))
-        ];
+        for alg in algs {
+            let ctx = create_context(alg);
 
-        let res = reads
-            .select(reads_renames)?
-            .join_on(
-                targets.select(target_renames)?,
-                JoinType::Inner,
-                // a.column2 >= b.column1 AND a.column1 <= b.column2
-                on_expr,
-            )?
-            .repartition(datafusion::logical_expr::Partitioning::RoundRobinBatch(1))?
-            .sort(vec![
+            let csv_options = CsvReadOptions::new()
+                .has_header(true)
+                .schema(&schema)
+                .file_extension("csv");
+
+            let reads = ctx.read_csv(READS_PATH, csv_options.clone()).await?;
+            let targets = ctx.read_csv(TARGETS_PATH, csv_options).await?;
+
+            let reads_renames = vec![
+                col("contig").alias("reads_contig"),
+                col("pos_start").alias("reads_pos_start"),
+                col("pos_end").alias("reads_pos_end"),
+            ];
+            let target_renames = vec![
+                col("contig").alias("target_contig"),
+                col("pos_start").alias("target_pos_start"),
+                col("pos_end").alias("target_pos_end"),
+            ];
+            let on_expr = [
+                col("reads_contig").eq(col("target_contig")),
+                col("reads_pos_start").lt_eq(col("target_pos_end")),
+                col("reads_pos_end").gt_eq(col("target_pos_start")),
+            ];
+            let sort_by = vec![
                 col("reads_contig").sort(true, true),
                 col("reads_pos_start").sort(true, true),
                 col("reads_pos_end").sort(true, true),
                 col("target_contig").sort(true, true),
                 col("target_pos_start").sort(true, true),
                 col("target_pos_end").sort(true, true),
-            ])?;
+            ];
 
-        let x = res.clone().create_physical_plan().await?;
-        // println!("execution_plan = {:?}", x);
+            let res = reads
+                .select(reads_renames)?
+                .join_on(targets.select(target_renames)?, JoinType::Inner, on_expr)?
+                .repartition(datafusion::logical_expr::Partitioning::RoundRobinBatch(1))?
+                .sort(sort_by)?;
 
-        res.clone().explain(false, false)?.show().await?;
+            res.clone().explain(false, false)?.show().await?;
+            res.clone().show().await?;
 
-        // println!("\n------------------------\n");
-        // println!("b={}", res.clone().collect().await?.len());
-        // println!("---");
-        res.clone().show().await?;
+            let expected = [
+                "+--------------+-----------------+---------------+---------------+------------------+----------------+",
+                "| reads_contig | reads_pos_start | reads_pos_end | target_contig | target_pos_start | target_pos_end |",
+                "+--------------+-----------------+---------------+---------------+------------------+----------------+",
+                "| chr1         | 150             | 250           | chr1          | 100              | 190            |",
+                "| chr1         | 150             | 250           | chr1          | 200              | 290            |",
+                "| chr1         | 190             | 300           | chr1          | 100              | 190            |",
+                "| chr1         | 190             | 300           | chr1          | 200              | 290            |",
+                "| chr1         | 300             | 501           | chr1          | 400              | 600            |",
+                "| chr1         | 500             | 700           | chr1          | 400              | 600            |",
+                "| chr1         | 15000           | 15000         | chr1          | 10000            | 20000          |",
+                "| chr1         | 22000           | 22300         | chr1          | 22100            | 22100          |",
+                "| chr2         | 150             | 250           | chr2          | 100              | 190            |",
+                "| chr2         | 150             | 250           | chr2          | 200              | 290            |",
+                "| chr2         | 190             | 300           | chr2          | 100              | 190            |",
+                "| chr2         | 190             | 300           | chr2          | 200              | 290            |",
+                "| chr2         | 300             | 500           | chr2          | 400              | 600            |",
+                "| chr2         | 500             | 700           | chr2          | 400              | 600            |",
+                "| chr2         | 15000           | 15000         | chr2          | 10000            | 20000          |",
+                "| chr2         | 22000           | 22300         | chr2          | 22100            | 22100          |",
+                "+--------------+-----------------+---------------+---------------+------------------+----------------+",
+            ];
 
-        // select * from targets
-        // join reads on
-        // targets.contig = reads.contig
-        // and targets.pos_start >= reads.pos_start
-        // and targets.pos_end <= reads.pos_end;
-        let expected = [
-            "+--------------+-----------------+---------------+---------------+------------------+----------------+",
-            "| reads_contig | reads_pos_start | reads_pos_end | target_contig | target_pos_start | target_pos_end |",
-            "+--------------+-----------------+---------------+---------------+------------------+----------------+",
-            "| chr1         | 150             | 250           | chr1          | 100              | 190            |",
-            "| chr1         | 150             | 250           | chr1          | 200              | 290            |",
-            "| chr1         | 190             | 300           | chr1          | 100              | 190            |",
-            "| chr1         | 190             | 300           | chr1          | 200              | 290            |",
-            "| chr1         | 300             | 501           | chr1          | 400              | 600            |",
-            "| chr1         | 500             | 700           | chr1          | 400              | 600            |",
-            "| chr1         | 15000           | 15000         | chr1          | 10000            | 20000          |",
-            "| chr1         | 22000           | 22300         | chr1          | 22100            | 22100          |",
-            "| chr2         | 150             | 250           | chr2          | 100              | 190            |",
-            "| chr2         | 150             | 250           | chr2          | 200              | 290            |",
-            "| chr2         | 190             | 300           | chr2          | 100              | 190            |",
-            "| chr2         | 190             | 300           | chr2          | 200              | 290            |",
-            "| chr2         | 300             | 500           | chr2          | 400              | 600            |",
-            "| chr2         | 500             | 700           | chr2          | 400              | 600            |",
-            "| chr2         | 15000           | 15000         | chr2          | 10000            | 20000          |",
-            "| chr2         | 22000           | 22300         | chr2          | 22100            | 22100          |",
-            "+--------------+-----------------+---------------+---------------+------------------+----------------+",
-        ];
-
-        assert_batches_sorted_eq!(expected, &res.clone().collect().await?);
+            assert_batches_sorted_eq!(expected, &res.clone().collect().await?);
+        }
 
         Ok(())
     }
@@ -1252,7 +1275,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_wrong_datatype() -> Result<()> {
-        let ctx = create_context();
+        let ctx = create_context(Algorithm::default());
         let max_plus_one = i64::from(i32::MAX) + 1;
 
         let create_table_a_query = r#"
