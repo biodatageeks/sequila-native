@@ -738,7 +738,7 @@ impl IntervalJoinAlgorithm {
         match self {
             IntervalJoinAlgorithm::Coitrees(hashmap) => {
                 hashmap.get(&k).map(|tree| {
-                    tree.query(start, end, |node| f(*node.metadata as u32));
+                    tree.query(start, end, |node| f(node.metadata as u32));
                 });
             }
             IntervalJoinAlgorithm::IntervalTree(map) => {
