@@ -663,6 +663,7 @@ enum IntervalJoinAlgorithm {
     Coitrees(FnvHashMap<u64, COITree<Position, u32>>),
     IntervalTree(FnvHashMap<u64, rust_bio::IntervalTree<i32, Position>>),
     ArrayIntervalTree(FnvHashMap<u64, rust_bio::ArrayBackedIntervalTree<i32, Position>>),
+    AIList(FnvHashMap<u64, scailist::ScAIList<Position>>)
 }
 
 impl Debug for IntervalJoinAlgorithm {
@@ -680,7 +681,8 @@ impl Debug for IntervalJoinAlgorithm {
             }
             IntervalJoinAlgorithm::ArrayIntervalTree(m) => {
                 f.debug_struct("ArrayIntervalTree").field("0", m).finish()
-            }
+            },
+            IntervalJoinAlgorithm::AIList(m) => f.debug_struct("AIList").field("0", m).finish(),
         }
     }
 }
@@ -727,7 +729,18 @@ impl IntervalJoinAlgorithm {
                     .collect::<FnvHashMap<u64, rust_bio::ArrayBackedIntervalTree<i32, Position>>>();
 
                 IntervalJoinAlgorithm::ArrayIntervalTree(d)
-            }
+            },
+            Algorithm::AIList => {
+                let d = hash_map.iter().map(|(k, v)| {
+                    let intervals = v.iter().map(|(s, e, p)| {
+                        scailist::Interval { start: *s as u32, end: *e as u32 + 1, val: *p }
+                    }).collect::<Vec<scailist::Interval<Position>>>();
+
+                    (*k, scailist::ScAIList::new(intervals, None))
+                }).collect::<FnvHashMap<u64, scailist::ScAIList<Position>>>();
+
+                IntervalJoinAlgorithm::AIList(d)
+            },
         }
     }
 
@@ -753,6 +766,13 @@ impl IntervalJoinAlgorithm {
                     for x in tree.find(start..end + 1) {
                         f(*x.data() as u32)
                     }
+                });
+            },
+            IntervalJoinAlgorithm::AIList(map) => {
+                map.get(&k).map(|list| {
+                   for x in list.find(start as u32, end as u32 + 1) {
+                       f(x.val as u32)
+                   }
                 });
             }
         }
@@ -1063,7 +1083,7 @@ mod tests {
 
         let sequila_config = SequilaConfig {
             prefer_interval_join: true,
-            interval_join_algorithm: Algorithm::default(),
+            interval_join_algorithm: Algorithm::AIList,
         };
 
         let config = SessionConfig::from(options)

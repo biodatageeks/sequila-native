@@ -57,6 +57,7 @@ pub enum Algorithm {
     Coitrees,
     IntervalTree,
     ArrayIntervalTree,
+    AIList,
 }
 
 #[derive(Debug)]
@@ -79,6 +80,7 @@ impl FromStr for Algorithm {
             "coitrees" => Ok(Algorithm::Coitrees),
             "intervaltree" => Ok(Algorithm::IntervalTree),
             "arrayintervaltree" => Ok(Algorithm::ArrayIntervalTree),
+            "ailist" => Ok(Algorithm::AIList),
             _ => Err(ParseAlgorithmError(format!(
                 "Can't parse '{}' as Algorithm",
                 s
@@ -93,6 +95,7 @@ impl std::fmt::Display for Algorithm {
             Algorithm::Coitrees => "Coitrees",
             Algorithm::IntervalTree => "IntervalTree",
             Algorithm::ArrayIntervalTree => "ArrayIntervalTree",
+            Algorithm::AIList => "AIList",
         };
         write!(f, "{}", val)
     }
