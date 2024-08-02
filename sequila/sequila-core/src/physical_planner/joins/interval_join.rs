@@ -653,7 +653,7 @@ async fn collect_left_input(
         offset += batch.num_rows();
     }
 
-    let hashmap = IntervalJoinAlgorithm::new(&algorithm, &hashmap);
+    let hashmap = IntervalJoinAlgorithm::new(&algorithm, hashmap);
 
     let single_batch = concat_batches(&schema, &batches)?;
     let data = JoinLeftData::new(hashmap, single_batch, reservation);
@@ -693,65 +693,68 @@ impl Debug for IntervalJoinAlgorithm {
 }
 
 impl IntervalJoinAlgorithm {
-    fn new(alg: &Algorithm, hash_map: &HashMap<u64, Vec<Trio>>) -> IntervalJoinAlgorithm {
+    fn new(alg: &Algorithm, hash_map: HashMap<u64, Vec<Trio>>) -> IntervalJoinAlgorithm {
         match alg {
             Algorithm::Coitrees => {
                 let hashmap = hash_map
-                    .iter()
+                    .into_iter()
                     .map(|(k, v)| {
-                        let vv = v
-                            .iter()
-                            .map(|(s, e, p)| Interval::new(*s, *e, *p))
+                        let intervals = v
+                            .into_iter()
+                            .map(|(s, e, p)| Interval::new(s, e, p))
                             .collect::<Vec<Interval<Position>>>();
-                        let q: COITree<Position, u32> = COITree::new(&vv);
-                        (*k, q)
+
+                        let tree: COITree<Position, u32> = COITree::new(intervals.iter());
+                        (k, tree)
                     })
                     .collect::<FnvHashMap<u64, COITree<Position, u32>>>();
 
                 IntervalJoinAlgorithm::Coitrees(hashmap)
             }
             Algorithm::IntervalTree => {
-                let d = hash_map
-                    .iter()
+                let hashmap = hash_map
+                    .into_iter()
                     .map(|(k, v)| {
                         let tree = rust_bio::IntervalTree::from_iter(
-                            v.iter().map(|(s, e, p)| (*s..*e + 1, *p)),
+                            v.into_iter().map(|(s, e, p)| (s..e + 1, p)),
                         );
-                        (*k, tree)
+                        (k, tree)
                     })
                     .collect::<FnvHashMap<u64, rust_bio::IntervalTree<i32, Position>>>();
-                IntervalJoinAlgorithm::IntervalTree(d)
+
+                IntervalJoinAlgorithm::IntervalTree(hashmap)
             }
             Algorithm::ArrayIntervalTree => {
-                let d = hash_map
-                    .iter()
+                let hashmap = hash_map
+                    .into_iter()
                     .map(|(k, v)| {
-                        let v = v.iter().map(|(s, e, p)| (*s..*e + 1, *p));
-                        let tree = rust_bio::ArrayBackedIntervalTree::<i32, Position>::from_iter(v);
-                        (*k, tree)
+                        let tree = rust_bio::ArrayBackedIntervalTree::<i32, Position>::from_iter(
+                            v.into_iter().map(|(s, e, p)| (s..e + 1, p)),
+                        );
+                        (k, tree)
                     })
                     .collect::<FnvHashMap<u64, rust_bio::ArrayBackedIntervalTree<i32, Position>>>();
 
-                IntervalJoinAlgorithm::ArrayIntervalTree(d)
+                IntervalJoinAlgorithm::ArrayIntervalTree(hashmap)
             }
             Algorithm::AIList => {
-                let d = hash_map
-                    .iter()
+                let hashmap = hash_map
+                    .into_iter()
                     .map(|(k, v)| {
                         let intervals = v
-                            .iter()
+                            .into_iter()
                             .map(|(s, e, p)| scailist::Interval {
-                                start: *s as u32,
-                                end: *e as u32 + 1,
-                                val: *p,
+                                start: s as u32,
+                                end: e as u32 + 1,
+                                val: p,
                             })
                             .collect::<Vec<scailist::Interval<Position>>>();
 
-                        (*k, scailist::ScAIList::new(intervals, None))
+                        (k, scailist::ScAIList::new(intervals, None))
                     })
                     .collect::<FnvHashMap<u64, scailist::ScAIList<Position>>>();
 
-                IntervalJoinAlgorithm::AIList(d)
+                IntervalJoinAlgorithm::AIList(hashmap)
             }
         }
     }
@@ -859,7 +862,6 @@ struct IntervalJoinStream {
 }
 
 impl IntervalJoinStream {
-
     fn poll_next_impl(
         &mut self,
         cx: &mut std::task::Context<'_>,
@@ -1086,12 +1088,12 @@ mod tests {
     const READS_PATH: &str = "../../testing/data/interval/reads.csv";
     const TARGETS_PATH: &str = "../../testing/data/interval/targets.csv";
 
-    fn create_context(algorithm: Algorithm) -> SessionContext {
+    fn create_context(algorithm: Option<Algorithm>) -> SessionContext {
         let options = ConfigOptions::new();
 
         let sequila_config = SequilaConfig {
-            prefer_interval_join: true,
-            interval_join_algorithm: algorithm,
+            prefer_interval_join: algorithm.is_some(),
+            interval_join_algorithm: algorithm.unwrap_or_default(),
         };
 
         let config = SessionConfig::from(options)
@@ -1112,10 +1114,11 @@ mod tests {
         ]);
 
         let algs = [
-            Algorithm::Coitrees,
-            Algorithm::IntervalTree,
-            Algorithm::ArrayIntervalTree,
-            Algorithm::AIList,
+            None,
+            Some(Algorithm::Coitrees),
+            Some(Algorithm::IntervalTree),
+            Some(Algorithm::ArrayIntervalTree),
+            Some(Algorithm::AIList),
         ];
 
         for alg in algs {
@@ -1271,7 +1274,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_wrong_datatype() -> Result<()> {
-        let ctx = create_context(Algorithm::default());
+        let ctx = create_context(Some(Algorithm::default()));
         let max_plus_one = i64::from(i32::MAX) + 1;
 
         let create_table_a_query = r#"
