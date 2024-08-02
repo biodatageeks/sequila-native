@@ -24,7 +24,7 @@ use datafusion::common::{
 };
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
-use datafusion::logical_expr::{Operator, UserDefinedLogicalNode};
+use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::equivalence::{join_equivalence_properties, ProjectionMapping};
 use datafusion::physical_expr::expressions::{BinaryExpr, CastExpr, Column, UnKnownColumn};
 use datafusion::physical_expr::{Distribution, Partitioning, PhysicalExpr, PhysicalExprRef};
@@ -106,6 +106,7 @@ pub struct IntervalJoinExec {
 }
 
 impl IntervalJoinExec {
+    #[allow(clippy::too_many_arguments)]
     pub fn try_new(
         left: Arc<dyn ExecutionPlan>,
         right: Arc<dyn ExecutionPlan>,
@@ -153,7 +154,7 @@ impl IntervalJoinExec {
             filter,
             intervals,
             join_type: *join_type,
-            join_schema: join_schema,
+            join_schema,
             left_fut: Default::default(),
             random_state,
             mode: partition_mode,
@@ -349,7 +350,6 @@ fn project_index_to_exprs(
 }
 
 impl DisplayAs for IntervalJoinExec {
-    //TODO: Update for the IntervalSearchJoinExec
     fn fmt_as(&self, t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
@@ -566,6 +566,7 @@ impl ExecutionPlan for IntervalJoinExec {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn collect_left_input(
     partition: Option<usize>,
     random_state: RandomState,
@@ -636,14 +637,14 @@ async fn collect_left_input(
     let mut offset = 0;
 
     // Updating hashmap starting from the last batch
-    for batch in &batches {
+    for batch in batches.iter() {
         // build a left hash map
         hashes_buffer.clear();
         hashes_buffer.resize(batch.num_rows(), 0);
         update_hashmap(
             &on_left,
             &left_interval,
-            &batch,
+            batch,
             &mut hashmap,
             offset,
             &random_state,
@@ -652,7 +653,7 @@ async fn collect_left_input(
         offset += batch.num_rows();
     }
 
-    let hashmap = IntervalJoinAlgorithm::new(&algorithm, &hashmap);
+    let hashmap = IntervalJoinAlgorithm::new(&algorithm, hashmap);
 
     let single_batch = concat_batches(&schema, &batches)?;
     let data = JoinLeftData::new(hashmap, single_batch, reservation);
@@ -692,100 +693,102 @@ impl Debug for IntervalJoinAlgorithm {
 }
 
 impl IntervalJoinAlgorithm {
-    fn new(alg: &Algorithm, hash_map: &HashMap<u64, Vec<Trio>>) -> IntervalJoinAlgorithm {
+    fn new(alg: &Algorithm, hash_map: HashMap<u64, Vec<Trio>>) -> IntervalJoinAlgorithm {
         match alg {
             Algorithm::Coitrees => {
                 let hashmap = hash_map
-                    .iter()
+                    .into_iter()
                     .map(|(k, v)| {
-                        let vv = v
-                            .iter()
-                            .map(|(s, e, p)| Interval::new(*s, *e, *p))
+                        let intervals = v
+                            .into_iter()
+                            .map(|(s, e, p)| Interval::new(s, e, p))
                             .collect::<Vec<Interval<Position>>>();
-                        let q: COITree<Position, u32> = COITree::new(&vv);
-                        (*k, q)
+
+                        let tree: COITree<Position, u32> = COITree::new(intervals.iter());
+                        (k, tree)
                     })
                     .collect::<FnvHashMap<u64, COITree<Position, u32>>>();
 
                 IntervalJoinAlgorithm::Coitrees(hashmap)
             }
             Algorithm::IntervalTree => {
-                let d = hash_map
-                    .iter()
+                let hashmap = hash_map
+                    .into_iter()
                     .map(|(k, v)| {
-                        let mut tree = rust_bio::IntervalTree::from_iter(
-                            v.iter().map(|(s, e, p)| (*s..*e + 1, *p)),
+                        let tree = rust_bio::IntervalTree::from_iter(
+                            v.into_iter().map(|(s, e, p)| (s..e + 1, p)),
                         );
-                        (*k, tree)
+                        (k, tree)
                     })
                     .collect::<FnvHashMap<u64, rust_bio::IntervalTree<i32, Position>>>();
-                IntervalJoinAlgorithm::IntervalTree(d)
+
+                IntervalJoinAlgorithm::IntervalTree(hashmap)
             }
             Algorithm::ArrayIntervalTree => {
-                let d = hash_map
-                    .iter()
+                let hashmap = hash_map
+                    .into_iter()
                     .map(|(k, v)| {
-                        let v = v.iter().map(|(s, e, p)| (*s..*e + 1, *p));
-                        let mut tree =
-                            rust_bio::ArrayBackedIntervalTree::<i32, Position>::from_iter(v);
-                        (*k, tree)
+                        let tree = rust_bio::ArrayBackedIntervalTree::<i32, Position>::from_iter(
+                            v.into_iter().map(|(s, e, p)| (s..e + 1, p)),
+                        );
+                        (k, tree)
                     })
                     .collect::<FnvHashMap<u64, rust_bio::ArrayBackedIntervalTree<i32, Position>>>();
 
-                IntervalJoinAlgorithm::ArrayIntervalTree(d)
+                IntervalJoinAlgorithm::ArrayIntervalTree(hashmap)
             }
             Algorithm::AIList => {
-                let d = hash_map
-                    .iter()
+                let hashmap = hash_map
+                    .into_iter()
                     .map(|(k, v)| {
                         let intervals = v
-                            .iter()
+                            .into_iter()
                             .map(|(s, e, p)| scailist::Interval {
-                                start: *s as u32,
-                                end: *e as u32 + 1,
-                                val: *p,
+                                start: s as u32,
+                                end: e as u32 + 1,
+                                val: p,
                             })
                             .collect::<Vec<scailist::Interval<Position>>>();
 
-                        (*k, scailist::ScAIList::new(intervals, None))
+                        (k, scailist::ScAIList::new(intervals, None))
                     })
                     .collect::<FnvHashMap<u64, scailist::ScAIList<Position>>>();
 
-                IntervalJoinAlgorithm::AIList(d)
+                IntervalJoinAlgorithm::AIList(hashmap)
             }
         }
     }
 
-    fn get<F>(&self, k: u64, start: i32, end: i32, mut f: F) -> ()
+    fn get<F>(&self, k: u64, start: i32, end: i32, mut f: F)
     where
-        F: FnMut(u32) -> (),
+        F: FnMut(u32),
     {
         match self {
             IntervalJoinAlgorithm::Coitrees(hashmap) => {
-                hashmap.get(&k).map(|tree| {
+                if let Some(tree) = hashmap.get(&k) {
                     tree.query(start, end, |node| f(node.metadata as u32));
-                });
+                }
             }
-            IntervalJoinAlgorithm::IntervalTree(map) => {
-                map.get(&k).map(|tree| {
-                    for x in tree.find(start..end + 1) {
-                        f(*x.data() as u32)
+            IntervalJoinAlgorithm::IntervalTree(hashmap) => {
+                if let Some(tree) = hashmap.get(&k) {
+                    for entry in tree.find(start..end + 1) {
+                        f(*entry.data() as u32)
                     }
-                });
+                }
             }
-            IntervalJoinAlgorithm::ArrayIntervalTree(map) => {
-                map.get(&k).map(|tree| {
-                    for x in tree.find(start..end + 1) {
-                        f(*x.data() as u32)
+            IntervalJoinAlgorithm::ArrayIntervalTree(hashmap) => {
+                if let Some(tree) = hashmap.get(&k) {
+                    for entry in tree.find(start..end + 1) {
+                        f(*entry.data() as u32)
                     }
-                });
+                }
             }
-            IntervalJoinAlgorithm::AIList(map) => {
-                map.get(&k).map(|list| {
-                    for x in list.find(start as u32, end as u32 + 1) {
-                        f(x.val as u32)
+            IntervalJoinAlgorithm::AIList(hashmap) => {
+                if let Some(list) = hashmap.get(&k) {
+                    for interval in list.find(start as u32, end as u32 + 1) {
+                        f(interval.val as u32)
                     }
-                });
+                }
             }
         }
     }
@@ -805,9 +808,9 @@ fn update_hashmap(
         .map(|c| c.evaluate(batch)?.into_array(batch.num_rows()))
         .collect::<Result<Vec<_>>>()?;
 
-    let hash_values = create_hashes(&keys_values, random_state, hashes_buffer)?;
+    let hash_values: &mut Vec<u64> = create_hashes(&keys_values, random_state, hashes_buffer)?;
 
-    let hash_values_iter = hash_values
+    let hash_values_iter: Vec<(usize, &u64)> = hash_values
         .iter()
         .enumerate()
         .map(|(i, val)| (i + offset, val))
@@ -816,16 +819,19 @@ fn update_hashmap(
     let start = evaluate_as_i32(left_interval.start.clone(), batch)?;
     let end = evaluate_as_i32(left_interval.end.clone(), batch)?;
 
-    for i in 0..batch.num_rows() {
-        let (position, hash_val) = hash_values_iter[i];
-        let intervals = hash_map.entry(*hash_val).or_insert(Vec::new());
-
-        intervals.push((start.value(i), end.value(i), position))
-    }
+    hash_values_iter
+        .into_iter()
+        .enumerate()
+        .take(batch.num_rows())
+        .for_each(|(i, (position, hash_val))| {
+            let intervals: &mut Vec<Trio> = hash_map.entry(*hash_val).or_default();
+            intervals.push((start.value(i), end.value(i), position))
+        });
 
     Ok(())
 }
 
+#[allow(dead_code)]
 struct IntervalJoinStream {
     /// Input schema
     schema: Arc<Schema>,
@@ -856,14 +862,10 @@ struct IntervalJoinStream {
 }
 
 impl IntervalJoinStream {
-    // fn process_next(&self, left_data: &JoinLeftData, batch: &RecordBatch) -> Result<RecordBatch> {
-    //
-    // }
-
     fn poll_next_impl(
         &mut self,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<datafusion::common::Result<RecordBatch>>> {
+    ) -> std::task::Poll<Option<Result<RecordBatch>>> {
         let left_data: &JoinLeftData = match ready!(self.left_fut.get(cx)) {
             Ok(left_data) => left_data,
             Err(e) => return Poll::Ready(Some(Err(e))),
@@ -979,7 +981,6 @@ impl Stream for IntervalJoinStream {
 trait FromPhysicalExpr {
     fn to_binary(&self) -> Option<&BinaryExpr>;
     fn to_column(&self) -> Option<&Column>;
-    fn to_cast_expr(&self) -> Option<&CastExpr>;
 }
 
 impl FromPhysicalExpr for dyn PhysicalExpr {
@@ -988,9 +989,6 @@ impl FromPhysicalExpr for dyn PhysicalExpr {
     }
     fn to_column(&self) -> Option<&Column> {
         self.as_any().downcast_ref::<Column>()
-    }
-    fn to_cast_expr(&self) -> Option<&CastExpr> {
-        self.as_any().downcast_ref::<CastExpr>()
     }
 }
 
@@ -1090,12 +1088,12 @@ mod tests {
     const READS_PATH: &str = "../../testing/data/interval/reads.csv";
     const TARGETS_PATH: &str = "../../testing/data/interval/targets.csv";
 
-    fn create_context(algorithm: Algorithm) -> SessionContext {
+    fn create_context(algorithm: Option<Algorithm>) -> SessionContext {
         let options = ConfigOptions::new();
 
         let sequila_config = SequilaConfig {
-            prefer_interval_join: true,
-            interval_join_algorithm: algorithm,
+            prefer_interval_join: algorithm.is_some(),
+            interval_join_algorithm: algorithm.unwrap_or_default(),
         };
 
         let config = SessionConfig::from(options)
@@ -1116,10 +1114,11 @@ mod tests {
         ]);
 
         let algs = [
-            Algorithm::Coitrees,
-            Algorithm::IntervalTree,
-            Algorithm::ArrayIntervalTree,
-            Algorithm::AIList,
+            None,
+            Some(Algorithm::Coitrees),
+            Some(Algorithm::IntervalTree),
+            Some(Algorithm::ArrayIntervalTree),
+            Some(Algorithm::AIList),
         ];
 
         for alg in algs {
@@ -1275,7 +1274,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_wrong_datatype() -> Result<()> {
-        let ctx = create_context(Algorithm::default());
+        let ctx = create_context(Some(Algorithm::default()));
         let max_plus_one = i64::from(i32::MAX) + 1;
 
         let create_table_a_query = r#"

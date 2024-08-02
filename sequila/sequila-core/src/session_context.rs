@@ -29,10 +29,8 @@ impl SeQuiLaSessionExt for SessionContext {
         let state = SessionState::new_with_config_rt(config, runtime);
         let ctx = SessionContext::new_with_state(
             state
-                .with_query_planner(Arc::new(SeQuiLaQueryPlanner::default()))
-                .add_physical_optimizer_rule(Arc::new(
-                    IntervalJoinPhysicalOptimizationRule::default(),
-                )),
+                .with_query_planner(Arc::new(SeQuiLaQueryPlanner))
+                .add_physical_optimizer_rule(Arc::new(IntervalJoinPhysicalOptimizationRule)),
         );
         let hammer = emojis::get_by_shortcode("hammer_and_wrench").unwrap();
         info!("Initialized SeQuiLaQueryPlanner {hammer}...");
@@ -42,7 +40,7 @@ impl SeQuiLaSessionExt for SessionContext {
 
 extensions_options! {
     pub struct SequilaConfig {
-        pub prefer_interval_join: bool, default = false
+        pub prefer_interval_join: bool, default = true
         pub interval_join_algorithm: Algorithm, default = Algorithm::default()
     }
 }
