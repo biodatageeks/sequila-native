@@ -20,16 +20,15 @@
 use std::future::Future;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::usize;
 
 use arrow::datatypes::Schema;
 use datafusion::common::stats::Precision;
 use datafusion::common::{DataFusionError, JoinType, Result, SharedResult};
 use datafusion::logical_expr::interval_arithmetic::Interval;
 use datafusion::physical_expr::expressions::Column;
-use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::joins::utils::{adjust_right_output_partitioning, JoinOn};
-use datafusion::physical_plan::metrics::{self, ExecutionPlanMetricsSet, MetricBuilder};
+use datafusion::physical_plan::metrics;
+use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricBuilder};
 use datafusion::physical_plan::{ColumnStatistics, ExecutionMode, ExecutionPlan, Statistics};
 use datafusion::physical_plan::{ExecutionPlanProperties, Partitioning};
 use futures::future::{BoxFuture, Shared};
@@ -405,6 +404,7 @@ impl<T: 'static> OnceFut<T> {
     }
 
     /// Get shared reference to the result of the computation if it is ready, without consuming it
+    #[allow(dead_code)]
     pub(crate) fn get_shared(&mut self, cx: &mut Context<'_>) -> Poll<Result<Arc<T>>> {
         if let OnceFutState::Pending(fut) = &mut self.state {
             let r = ready!(fut.poll_unpin(cx));
@@ -423,6 +423,7 @@ impl<T: 'static> OnceFut<T> {
 
 /// Metrics for build & probe joins
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub(crate) struct BuildProbeJoinMetrics {
     /// Total time for collecting build-side of join
     pub(crate) build_time: metrics::Time,

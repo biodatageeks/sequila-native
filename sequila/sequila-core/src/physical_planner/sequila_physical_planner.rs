@@ -5,8 +5,7 @@ use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::DFSchema;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::context::SessionState;
-use datafusion::logical_expr::{Expr, LogicalPlan, Operator};
-use datafusion::physical_expr::expressions::BinaryExpr;
+use datafusion::logical_expr::{Expr, LogicalPlan};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::joins::HashJoinExec;
@@ -33,7 +32,7 @@ impl PhysicalOptimizerRule for IntervalJoinPhysicalOptimizationRule {
         let default = SequilaConfig::default();
         let sequila_config = config.extensions.get::<SequilaConfig>().unwrap_or(&default);
 
-        if (!sequila_config.prefer_interval_join) {
+        if !sequila_config.prefer_interval_join {
             return Ok(plan);
         }
 
@@ -52,7 +51,7 @@ impl PhysicalOptimizerRule for IntervalJoinPhysicalOptimizationRule {
                             intervals,
                             &join_exec.join_type,
                             join_exec.projection.clone(),
-                            join_exec.partition_mode().clone(),
+                            *join_exec.partition_mode(),
                             join_exec.null_equals_null,
                             sequila_config.interval_join_algorithm.clone(),
                         )?;

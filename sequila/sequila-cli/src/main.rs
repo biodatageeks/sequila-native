@@ -35,7 +35,7 @@ async fn test_interval_rule_eq() -> datafusion::error::Result<()> {
     env_logger::init();
     let options = ConfigOptions::new();
     let config = SessionConfig::from(options);
-    let mut ctx = SessionContext::new_with_sequila(config);
+    let ctx = SessionContext::new_with_sequila(config);
     let sql = "CREATE TABLE target (contig TEXT, pos_start INT, pos_end INT)";
     ctx.sql(sql).await.unwrap();
     let sql = "CREATE TABLE read (contig TEXT, pos_start INT, pos_end INT)";
