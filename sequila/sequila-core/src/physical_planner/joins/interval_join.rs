@@ -245,7 +245,7 @@ impl IntervalJoinExec {
             projection,
             self.mode,
             self.null_equals_null,
-            self.algorithm.clone(),
+            self.algorithm,
         )
     }
 
@@ -366,11 +366,7 @@ impl DisplayAs for IntervalJoinExec {
                 write!(
                     f,
                     "IntervalJoinExec: mode={:?}, join_type={:?}, on=[{}]{}, alg={}",
-                    self.mode,
-                    self.join_type,
-                    on,
-                    display_filter,
-                    self.algorithm.clone()
+                    self.mode, self.join_type, on, display_filter, self.algorithm
                 )
             }
         }
@@ -449,7 +445,7 @@ impl ExecutionPlan for IntervalJoinExec {
             self.projection.clone(),
             self.mode,
             self.null_equals_null,
-            self.algorithm.clone(),
+            self.algorithm,
         )?))
     }
 
@@ -486,7 +482,7 @@ impl ExecutionPlan for IntervalJoinExec {
                     join_metrics.clone(),
                     reservation,
                     left_interval,
-                    self.algorithm.clone(),
+                    self.algorithm,
                 )
             }),
             PartitionMode::Partitioned => {
@@ -502,7 +498,7 @@ impl ExecutionPlan for IntervalJoinExec {
                     join_metrics.clone(),
                     reservation,
                     left_interval,
-                    self.algorithm.clone(),
+                    self.algorithm,
                 ))
             }
             PartitionMode::Auto => {
@@ -1082,11 +1078,53 @@ mod tests {
     use datafusion::arrow::datatypes::{DataType, Field};
     use datafusion::assert_batches_sorted_eq;
     use datafusion::config::ConfigOptions;
-    use datafusion::prelude::{col, CsvReadOptions, SessionConfig, SessionContext};
+    use datafusion::prelude::{col, CsvReadOptions, Expr, SessionConfig, SessionContext};
     use datafusion::test_util::plan_and_collect;
 
     const READS_PATH: &str = "../../testing/data/interval/reads.csv";
     const TARGETS_PATH: &str = "../../testing/data/interval/targets.csv";
+
+    fn schema() -> Schema {
+        Schema::new(vec![
+            Field::new("contig", DataType::Utf8, false),
+            Field::new("pos_start", DataType::Int32, false),
+            Field::new("pos_end", DataType::Int64, false),
+        ])
+    }
+
+    fn csv_options(schema: &Schema) -> CsvReadOptions {
+        CsvReadOptions::new()
+            .has_header(true)
+            .schema(schema)
+            .file_extension("csv")
+    }
+
+    fn reads_renames() -> Vec<Expr> {
+        vec![
+            col("contig").alias("reads_contig"),
+            col("pos_start").alias("reads_pos_start"),
+            col("pos_end").alias("reads_pos_end"),
+        ]
+    }
+
+    fn target_renames() -> Vec<Expr> {
+        vec![
+            col("contig").alias("target_contig"),
+            col("pos_start").alias("target_pos_start"),
+            col("pos_end").alias("target_pos_end"),
+        ]
+    }
+
+    fn sort_by() -> Vec<Expr> {
+        vec![
+            col("reads_contig").sort(true, true),
+            col("reads_pos_start").sort(true, true),
+            col("reads_pos_end").sort(true, true),
+            col("target_contig").sort(true, true),
+            col("target_pos_start").sort(true, true),
+            col("target_pos_end").sort(true, true),
+        ]
+    }
 
     fn create_context(algorithm: Option<Algorithm>) -> SessionContext {
         let options = ConfigOptions::new();
@@ -1107,11 +1145,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_all_interval_join_algorithms() -> Result<()> {
-        let schema = Schema::new(vec![
-            Field::new("contig", DataType::Utf8, false),
-            Field::new("pos_start", DataType::Int32, false),
-            Field::new("pos_end", DataType::Int64, false),
-        ]);
+        let schema = &schema();
 
         let algs = [
             None,
@@ -1124,44 +1158,25 @@ mod tests {
         for alg in algs {
             let ctx = create_context(alg);
 
-            let csv_options = CsvReadOptions::new()
-                .has_header(true)
-                .schema(&schema)
-                .file_extension("csv");
+            let reads = ctx.read_csv(READS_PATH, csv_options(schema)).await?;
+            let targets = ctx.read_csv(TARGETS_PATH, csv_options(schema)).await?;
 
-            let reads = ctx.read_csv(READS_PATH, csv_options.clone()).await?;
-            let targets = ctx.read_csv(TARGETS_PATH, csv_options).await?;
-
-            let reads_renames = vec![
-                col("contig").alias("reads_contig"),
-                col("pos_start").alias("reads_pos_start"),
-                col("pos_end").alias("reads_pos_end"),
-            ];
-            let target_renames = vec![
-                col("contig").alias("target_contig"),
-                col("pos_start").alias("target_pos_start"),
-                col("pos_end").alias("target_pos_end"),
-            ];
             let on_expr = [
                 col("reads_contig").eq(col("target_contig")),
                 col("reads_pos_start").lt_eq(col("target_pos_end")),
                 col("reads_pos_end").gt_eq(col("target_pos_start")),
             ];
-            let sort_by = vec![
-                col("reads_contig").sort(true, true),
-                col("reads_pos_start").sort(true, true),
-                col("reads_pos_end").sort(true, true),
-                col("target_contig").sort(true, true),
-                col("target_pos_start").sort(true, true),
-                col("target_pos_end").sort(true, true),
-            ];
 
             let res = reads
-                .select(reads_renames)?
-                .join_on(targets.select(target_renames)?, JoinType::Inner, on_expr)?
+                .select(reads_renames())?
+                .join_on(targets.select(target_renames())?, JoinType::Inner, on_expr)?
                 .repartition(datafusion::logical_expr::Partitioning::RoundRobinBatch(1))?
-                .sort(sort_by)?;
+                .sort(sort_by())?;
 
+            if alg.is_none() {
+                let expr = format!("{:?}", res.clone().explain(false, false)?.collect().await?);
+                assert!(expr.contains("HashJoinExec"))
+            }
             res.clone().explain(false, false)?.show().await?;
             res.clone().show().await?;
 
@@ -1191,6 +1206,87 @@ mod tests {
             assert_batches_sorted_eq!(expected, &res.clone().collect().await?);
         }
 
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_all_interval_join_algorithms_without_equi_condition() -> Result<()> {
+        let algs = [
+            None,
+            Some(Algorithm::Coitrees),
+            Some(Algorithm::IntervalTree),
+            Some(Algorithm::ArrayIntervalTree),
+            Some(Algorithm::AIList),
+        ];
+
+        let schema = &schema();
+
+        for alg in algs {
+            let ctx = create_context(alg);
+
+            let reads = ctx.read_csv(READS_PATH, csv_options(schema)).await?;
+            let targets = ctx.read_csv(TARGETS_PATH, csv_options(schema)).await?;
+
+            let on_expr = [
+                col("reads_pos_start").lt_eq(col("target_pos_end")),
+                col("reads_pos_end").gt_eq(col("target_pos_start")),
+            ];
+
+            let res = reads
+                .select(reads_renames())?
+                .join_on(targets.select(target_renames())?, JoinType::Inner, on_expr)?
+                .repartition(datafusion::logical_expr::Partitioning::RoundRobinBatch(1))?
+                .sort(sort_by())?;
+
+            if alg.is_none() {
+                let expr = format!("{:?}", res.clone().explain(false, false)?.collect().await?);
+                assert!(expr.contains("NestedLoopJoinExec"))
+            }
+
+            res.clone().explain(false, false)?.show().await?;
+            res.clone().show().await?;
+
+            let expected = [
+                "+--------------+-----------------+---------------+---------------+------------------+----------------+",
+                "| reads_contig | reads_pos_start | reads_pos_end | target_contig | target_pos_start | target_pos_end |",
+                "+--------------+-----------------+---------------+---------------+------------------+----------------+",
+                "| chr1         | 150             | 250           | chr1          | 100              | 190            |",
+                "| chr1         | 150             | 250           | chr1          | 200              | 290            |",
+                "| chr1         | 150             | 250           | chr2          | 100              | 190            |",
+                "| chr1         | 150             | 250           | chr2          | 200              | 290            |",
+                "| chr1         | 190             | 300           | chr1          | 100              | 190            |",
+                "| chr1         | 190             | 300           | chr1          | 200              | 290            |",
+                "| chr1         | 190             | 300           | chr2          | 100              | 190            |",
+                "| chr1         | 190             | 300           | chr2          | 200              | 290            |",
+                "| chr1         | 300             | 501           | chr1          | 400              | 600            |",
+                "| chr1         | 300             | 501           | chr2          | 400              | 600            |",
+                "| chr1         | 500             | 700           | chr1          | 400              | 600            |",
+                "| chr1         | 500             | 700           | chr2          | 400              | 600            |",
+                "| chr1         | 15000           | 15000         | chr1          | 10000            | 20000          |",
+                "| chr1         | 15000           | 15000         | chr2          | 10000            | 20000          |",
+                "| chr1         | 22000           | 22300         | chr1          | 22100            | 22100          |",
+                "| chr1         | 22000           | 22300         | chr2          | 22100            | 22100          |",
+                "| chr2         | 150             | 250           | chr1          | 100              | 190            |",
+                "| chr2         | 150             | 250           | chr1          | 200              | 290            |",
+                "| chr2         | 150             | 250           | chr2          | 100              | 190            |",
+                "| chr2         | 150             | 250           | chr2          | 200              | 290            |",
+                "| chr2         | 190             | 300           | chr1          | 100              | 190            |",
+                "| chr2         | 190             | 300           | chr1          | 200              | 290            |",
+                "| chr2         | 190             | 300           | chr2          | 100              | 190            |",
+                "| chr2         | 190             | 300           | chr2          | 200              | 290            |",
+                "| chr2         | 300             | 500           | chr1          | 400              | 600            |",
+                "| chr2         | 300             | 500           | chr2          | 400              | 600            |",
+                "| chr2         | 500             | 700           | chr1          | 400              | 600            |",
+                "| chr2         | 500             | 700           | chr2          | 400              | 600            |",
+                "| chr2         | 15000           | 15000         | chr1          | 10000            | 20000          |",
+                "| chr2         | 15000           | 15000         | chr2          | 10000            | 20000          |",
+                "| chr2         | 22000           | 22300         | chr1          | 22100            | 22100          |",
+                "| chr2         | 22000           | 22300         | chr2          | 22100            | 22100          |",
+                "+--------------+-----------------+---------------+---------------+------------------+----------------+",
+            ];
+
+            assert_batches_sorted_eq!(expected, &res.clone().collect().await?);
+        }
         Ok(())
     }
 
