@@ -49,7 +49,7 @@ impl ConfigExtension for SequilaConfig {
     const PREFIX: &'static str = "sequila";
 }
 
-#[derive(Debug, Eq, PartialEq, Default, Clone)]
+#[derive(Debug, Eq, PartialEq, Default, Clone, Copy)]
 pub enum Algorithm {
     #[default]
     Coitrees,
