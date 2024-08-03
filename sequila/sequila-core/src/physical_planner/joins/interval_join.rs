@@ -757,32 +757,32 @@ impl IntervalJoinAlgorithm {
 
     fn get<F>(&self, k: u64, start: i32, end: i32, mut f: F)
     where
-        F: FnMut(u32),
+        F: FnMut(Position),
     {
         match self {
             IntervalJoinAlgorithm::Coitrees(hashmap) => {
                 if let Some(tree) = hashmap.get(&k) {
-                    tree.query(start, end, |node| f(node.metadata as u32));
+                    tree.query(start, end, |node| f(node.metadata));
                 }
             }
             IntervalJoinAlgorithm::IntervalTree(hashmap) => {
                 if let Some(tree) = hashmap.get(&k) {
                     for entry in tree.find(start..end + 1) {
-                        f(*entry.data() as u32)
+                        f(*entry.data())
                     }
                 }
             }
             IntervalJoinAlgorithm::ArrayIntervalTree(hashmap) => {
                 if let Some(tree) = hashmap.get(&k) {
                     for entry in tree.find(start..end + 1) {
-                        f(*entry.data() as u32)
+                        f(*entry.data())
                     }
                 }
             }
             IntervalJoinAlgorithm::AIList(hashmap) => {
                 if let Some(list) = hashmap.get(&k) {
                     for interval in list.find(start as u32, end as u32 + 1) {
-                        f(interval.val as u32)
+                        f(interval.val)
                     }
                 }
             }
@@ -886,9 +886,8 @@ impl IntervalJoinStream {
                     let mut hashes_buffer: Vec<u64> = Vec::new();
                     hashes_buffer.clear();
                     hashes_buffer.resize(batch.num_rows(), 0);
-                    let unused = create_hashes(&rights, &self.random_state, &mut hashes_buffer);
 
-                    if let Err(e) = unused {
+                    if let Err(e) = create_hashes(&rights, &self.random_state, &mut hashes_buffer) {
                         return Some(Err(e));
                     }
 
@@ -913,7 +912,7 @@ impl IntervalJoinStream {
                         left_data
                             .hash_map
                             .get(hash_val, start.value(i), end.value(i), |pos| {
-                                left_builder.append(pos);
+                                left_builder.append(pos as u32);
                                 right_builder.append(i as u32);
                             })
                     }
