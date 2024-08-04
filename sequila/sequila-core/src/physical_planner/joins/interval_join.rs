@@ -11,10 +11,12 @@ use crate::physical_planner::joins::utils::{
 };
 use crate::session_context::Algorithm;
 use ahash::RandomState;
-use arrow::array::{Array, AsArray, PrimitiveArray, RecordBatch, UInt32Array, UInt32BufferBuilder};
-use arrow::compute::concat_batches;
-use arrow::datatypes::{DataType, Schema, SchemaRef};
 use bio::data_structures::interval_tree as rust_bio;
+use datafusion::arrow::array::{
+    Array, AsArray, PrimitiveArray, RecordBatch, UInt32Array, UInt32BufferBuilder,
+};
+use datafusion::arrow::compute::concat_batches;
+use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef};
 use datafusion::common::hash_utils::create_hashes;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::{
@@ -952,7 +954,7 @@ impl IntervalJoinStream {
 
                     //TODO: refactor
                     for c in left_data.batch.columns() {
-                        let taken = arrow::compute::take(c, &left_indexes, None);
+                        let taken = datafusion::arrow::compute::take(c, &left_indexes, None);
                         if let Ok(value) = taken {
                             columns.push(value);
                         } else {
@@ -962,7 +964,7 @@ impl IntervalJoinStream {
                     }
 
                     for c in batch.columns() {
-                        let taken = arrow::compute::take(c, &right_indexes, None);
+                        let taken = datafusion::arrow::compute::take(c, &right_indexes, None);
                         if let Ok(value) = taken {
                             columns.push(value);
                         } else {
@@ -1085,7 +1087,7 @@ pub fn parse_intervals(filter: &JoinFilter) -> Option<(ColInterval, ColInterval)
 fn evaluate_as_i32(
     expr: Arc<dyn PhysicalExpr>,
     batch: &RecordBatch,
-) -> Result<PrimitiveArray<arrow::datatypes::Int32Type>> {
+) -> Result<PrimitiveArray<datafusion::arrow::datatypes::Int32Type>> {
     let array = CastExpr::new(expr, DataType::Int32, None)
         .evaluate(batch)?
         .into_array(batch.num_rows())?

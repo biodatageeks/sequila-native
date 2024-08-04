@@ -15,7 +15,6 @@ datafusion.workspace = true
 log.workspace = true
 env_logger.workspace = true
 emojis.workspace = true
-arrow.workspace = true
 tokio.workspace = true
 ahash = "0.8.7"
 futures = { version = "0.3.30", features = [] }

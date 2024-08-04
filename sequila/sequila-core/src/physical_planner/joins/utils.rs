@@ -21,7 +21,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use arrow::datatypes::Schema;
+use datafusion::arrow::datatypes::Schema;
 use datafusion::common::stats::Precision;
 use datafusion::common::{DataFusionError, JoinType, Result, SharedResult};
 use datafusion::logical_expr::interval_arithmetic::Interval;
