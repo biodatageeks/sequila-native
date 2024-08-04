@@ -4,7 +4,6 @@ use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::mem::size_of;
 use std::sync::Arc;
-use std::task::Poll;
 
 use crate::physical_planner::joins::utils::symmetric_join_output_partitioning;
 use crate::physical_planner::joins::utils::{
@@ -16,7 +15,6 @@ use arrow::array::{Array, AsArray, PrimitiveArray, RecordBatch, UInt32Array, UIn
 use arrow::compute::concat_batches;
 use arrow::datatypes::{DataType, Schema, SchemaRef};
 use bio::data_structures::interval_tree as rust_bio;
-use coitrees::{COITree, Interval, IntervalTree};
 use datafusion::common::hash_utils::create_hashes;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::{
@@ -118,7 +116,7 @@ impl IntervalJoinExec {
         partition_mode: PartitionMode,
         null_equals_null: bool,
         algorithm: Algorithm,
-    ) -> datafusion::common::Result<Self> {
+    ) -> Result<Self> {
         let left_schema = left.schema();
         let right_schema = right.schema();
         if on.is_empty() {
@@ -628,7 +626,7 @@ async fn collect_left_input(
     reservation.try_grow(estimated_hastable_size)?;
     metrics.build_mem_used.add(estimated_hastable_size);
 
-    let mut hashmap = HashMap::<u64, Vec<Trio>>::new();
+    let mut hashmap = HashMap::<u64, Vec<SequilaInterval>>::new();
     let mut hashes_buffer = Vec::new();
     let mut offset = 0;
 
@@ -657,11 +655,37 @@ async fn collect_left_input(
     Ok(data)
 }
 
-// start, end, position
-type Trio = (i32, i32, Position);
+struct SequilaInterval {
+    start: i32,
+    end: i32,
+    position: Position,
+}
+
+impl SequilaInterval {
+    fn new(start: i32, end: i32, position: Position) -> SequilaInterval {
+        SequilaInterval {
+            start,
+            end,
+            position,
+        }
+    }
+    fn to_coitrees(self) -> coitrees::Interval<Position> {
+        coitrees::Interval::new(self.start, self.end, self.position)
+    }
+    fn to_rust_bio(self) -> (std::ops::Range<i32>, Position) {
+        (self.start..self.end + 1, self.position)
+    }
+    fn to_ailist(self) -> scailist::Interval<Position> {
+        scailist::Interval {
+            start: self.start as u32,
+            end: self.end as u32 + 1,
+            val: self.position,
+        }
+    }
+}
 
 enum IntervalJoinAlgorithm {
-    Coitrees(FnvHashMap<u64, COITree<Position, u32>>),
+    Coitrees(FnvHashMap<u64, coitrees::COITree<Position, u32>>),
     IntervalTree(FnvHashMap<u64, rust_bio::IntervalTree<i32, Position>>),
     ArrayIntervalTree(FnvHashMap<u64, rust_bio::ArrayBackedIntervalTree<i32, Position>>),
     AIList(FnvHashMap<u64, scailist::ScAIList<Position>>),
@@ -671,6 +695,7 @@ impl Debug for IntervalJoinAlgorithm {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             IntervalJoinAlgorithm::Coitrees(m) => {
+                use coitrees::IntervalTree;
                 let q = m
                     .iter()
                     .map(|(key, val)| (*key, val.iter().collect::<Vec<_>>()))
@@ -689,17 +714,20 @@ impl Debug for IntervalJoinAlgorithm {
 }
 
 impl IntervalJoinAlgorithm {
-    fn new(alg: &Algorithm, hash_map: HashMap<u64, Vec<Trio>>) -> IntervalJoinAlgorithm {
+    fn new(alg: &Algorithm, hash_map: HashMap<u64, Vec<SequilaInterval>>) -> IntervalJoinAlgorithm {
         match alg {
             Algorithm::Coitrees => {
+                use coitrees::{COITree, Interval, IntervalTree};
+
                 let hashmap = hash_map
                     .into_iter()
                     .map(|(k, v)| {
                         let intervals = v
                             .into_iter()
-                            .map(|(s, e, p)| Interval::new(s, e, p))
+                            .map(SequilaInterval::to_coitrees)
                             .collect::<Vec<Interval<Position>>>();
 
+                        // can hold up to u32::MAX intervals
                         let tree: COITree<Position, u32> = COITree::new(intervals.iter());
                         (k, tree)
                     })
@@ -712,7 +740,7 @@ impl IntervalJoinAlgorithm {
                     .into_iter()
                     .map(|(k, v)| {
                         let tree = rust_bio::IntervalTree::from_iter(
-                            v.into_iter().map(|(s, e, p)| (s..e + 1, p)),
+                            v.into_iter().map(SequilaInterval::to_rust_bio),
                         );
                         (k, tree)
                     })
@@ -725,7 +753,7 @@ impl IntervalJoinAlgorithm {
                     .into_iter()
                     .map(|(k, v)| {
                         let tree = rust_bio::ArrayBackedIntervalTree::<i32, Position>::from_iter(
-                            v.into_iter().map(|(s, e, p)| (s..e + 1, p)),
+                            v.into_iter().map(SequilaInterval::to_rust_bio),
                         );
                         (k, tree)
                     })
@@ -739,11 +767,7 @@ impl IntervalJoinAlgorithm {
                     .map(|(k, v)| {
                         let intervals = v
                             .into_iter()
-                            .map(|(s, e, p)| scailist::Interval {
-                                start: s as u32,
-                                end: e as u32 + 1,
-                                val: p,
-                            })
+                            .map(SequilaInterval::to_ailist)
                             .collect::<Vec<scailist::Interval<Position>>>();
 
                         (k, scailist::ScAIList::new(intervals, None))
@@ -761,6 +785,7 @@ impl IntervalJoinAlgorithm {
     {
         match self {
             IntervalJoinAlgorithm::Coitrees(hashmap) => {
+                use coitrees::IntervalTree;
                 if let Some(tree) = hashmap.get(&k) {
                     tree.query(start, end, |node| f(node.metadata));
                 }
@@ -794,7 +819,7 @@ fn update_hashmap(
     on: &[PhysicalExprRef],
     left_interval: &ColInterval,
     batch: &RecordBatch,
-    hash_map: &mut HashMap<u64, Vec<Trio>>,
+    hash_map: &mut HashMap<u64, Vec<SequilaInterval>>,
     offset: usize,
     random_state: &RandomState,
     hashes_buffer: &mut Vec<u64>,
@@ -820,8 +845,8 @@ fn update_hashmap(
         .enumerate()
         .take(batch.num_rows())
         .for_each(|(i, (position, hash_val))| {
-            let intervals: &mut Vec<Trio> = hash_map.entry(*hash_val).or_default();
-            intervals.push((start.value(i), end.value(i), position))
+            let intervals: &mut Vec<SequilaInterval> = hash_map.entry(*hash_val).or_default();
+            intervals.push(SequilaInterval::new(start.value(i), end.value(i), position))
         });
 
     Ok(())
@@ -864,7 +889,7 @@ impl IntervalJoinStream {
     ) -> std::task::Poll<Option<Result<RecordBatch>>> {
         let left_data: &JoinLeftData = match ready!(self.left_fut.get(cx)) {
             Ok(left_data) => left_data,
-            Err(e) => return Poll::Ready(Some(Err(e))),
+            Err(e) => return std::task::Poll::Ready(Some(Err(e))),
         };
 
         self.right
@@ -963,7 +988,7 @@ impl RecordBatchStream for IntervalJoinStream {
 }
 
 impl Stream for IntervalJoinStream {
-    type Item = datafusion::common::Result<RecordBatch>;
+    type Item = Result<RecordBatch>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
