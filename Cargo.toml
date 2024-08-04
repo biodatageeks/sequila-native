@@ -5,6 +5,7 @@ license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/biodatageeks/sequila-native.git"
 version = "0.1.0"
+rust-version = "1.76"
 
 [workspace]
 members = ["sequila/sequila-cli", "sequila/sequila-core"]
@@ -14,9 +15,11 @@ resolver = "2"
 sequila-core = { path = "sequila/sequila-core" }
 sequila-cli = { path = "sequila/sequila-cli" }
 
-datafusion = "40.0.0"
-#datafusion = { default-features = false, git = "https://github.com/apache/datafusion.git", rev = "40.0.0", features = ["unicode_expressions", "crypto_expressions"] }
-datafusion-cli = "40.0.0"
+# datafusion = "40.0.0"
+# datafusion-cli = "40.0.0"
+# using git repository to be compatable with datafution-comet
+datafusion = { default-features = false, git = "https://github.com/apache/datafusion.git", rev = "40.0.0", features = ["unicode_expressions", "crypto_expressions"] }
+datafusion-cli = { default-features = false, git = "https://github.com/apache/datafusion.git", rev = "40.0.0" }
 tokio = { version = "1.36.0", features = ["rt-multi-thread"] }
 env_logger = "0.11.1"
 log = "0.4.21"
