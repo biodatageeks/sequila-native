@@ -789,7 +789,7 @@ impl IntervalJoinAlgorithm {
             IntervalJoinAlgorithm::Coitrees(hashmap) => {
                 use coitrees::IntervalTree;
                 if let Some(tree) = hashmap.get(&k) {
-                    tree.query(start, end, |node| f(node.metadata));
+                    tree.query(start, end, |node| f(*node.metadata));
                 }
             }
             IntervalJoinAlgorithm::IntervalTree(hashmap) => {
