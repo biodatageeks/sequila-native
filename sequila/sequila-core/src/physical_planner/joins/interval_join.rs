@@ -1,10 +1,3 @@
-use std::any::Any;
-use std::collections::HashMap;
-use std::fmt;
-use std::fmt::{Debug, Formatter};
-use std::mem::size_of;
-use std::sync::Arc;
-
 use crate::physical_planner::joins::utils::symmetric_join_output_partitioning;
 use crate::physical_planner::joins::utils::{
     estimate_join_statistics, BuildProbeJoinMetrics, OnceAsync, OnceFut,
@@ -20,7 +13,8 @@ use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef};
 use datafusion::common::hash_utils::create_hashes;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::{
-    internal_err, plan_err, project_schema, DataFusionError, JoinSide, JoinType, Result, Statistics,
+    internal_datafusion_err, internal_err, plan_err, project_schema, DataFusionError, JoinSide,
+    JoinType, Result, Statistics,
 };
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
@@ -32,16 +26,23 @@ use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::common::can_project;
 use datafusion::physical_plan::joins::utils::{
     adjust_right_output_partitioning, build_join_schema, check_join_is_valid, ColumnIndex,
-    JoinFilter, JoinOn, JoinOnRef,
+    JoinFilter, JoinOn, JoinOnRef, StatefulStreamResult,
 };
 use datafusion::physical_plan::joins::PartitionMode;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, ExecutionPlanProperties,
-    PlanProperties,
+    handle_state, DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan,
+    ExecutionPlanProperties, PlanProperties,
 };
 use fnv::FnvHashMap;
 use futures::{ready, Stream, StreamExt, TryStreamExt};
+use std::any::Any;
+use std::collections::HashMap;
+use std::fmt;
+use std::fmt::{Debug, Formatter};
+use std::mem::size_of;
+use std::sync::Arc;
+use std::task::Poll;
 type Position = usize;
 
 #[derive(Debug)]
@@ -530,6 +531,9 @@ impl ExecutionPlan for IntervalJoinExec {
             null_equals_null: self.null_equals_null,
             reservation,
             right_interval,
+            state: IntervalJoinStreamState::WaitBuildSide,
+            build_side: None,
+            hashes_buffer: vec![],
         }))
     }
 
@@ -893,9 +897,187 @@ struct IntervalJoinStream {
     reservation: MemoryReservation,
 
     right_interval: ColInterval,
+
+    state: IntervalJoinStreamState,
+    build_side: Option<Arc<JoinLeftData>>,
+    hashes_buffer: Vec<u64>,
+}
+
+struct ProcessProbeBatchState {
+    /// Current probe-side batch
+    batch: RecordBatch,
+}
+
+enum IntervalJoinStreamState {
+    /// Initial state for IntervalJoinStream indicating that build-side data not collected yet
+    WaitBuildSide,
+    /// Indicates that build-side has been collected, and stream is ready for fetching probe-side
+    FetchProbeBatch,
+    /// Indicates that non-empty batch has been fetched from probe-side, and is ready to be processed
+    ProcessProbeBatch(ProcessProbeBatchState),
+    /// Indicates that probe-side has been fully processed
+    ExhaustedProbeSide,
+}
+
+impl IntervalJoinStreamState {
+    /// Tries to extract ProcessProbeBatchState from IntervalJoinStreamState enum.
+    /// Returns an error if state is not ProcessProbeBatchState.
+    fn try_as_process_probe_batch_mut(&mut self) -> Result<&mut ProcessProbeBatchState> {
+        match self {
+            IntervalJoinStreamState::ProcessProbeBatch(state) => Ok(state),
+            _ => internal_err!("Expected interval join stream in ProcessProbeBatch state"),
+        }
+    }
 }
 
 impl IntervalJoinStream {
+    fn poll_next_impl_stream(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Result<RecordBatch>>> {
+        loop {
+            return match self.state {
+                IntervalJoinStreamState::WaitBuildSide => {
+                    handle_state!(ready!(self.collect_build_side(cx)))
+                }
+                IntervalJoinStreamState::FetchProbeBatch => {
+                    handle_state!(ready!(self.fetch_probe_batch(cx)))
+                }
+                IntervalJoinStreamState::ProcessProbeBatch(_) => {
+                    handle_state!(self.process_probe_batch())
+                }
+                IntervalJoinStreamState::ExhaustedProbeSide => {
+                    log::info!("{:?} finished execution, total processed batches: {:?}, total join time: {:?} nanos",
+                        std::thread::current().id(),
+                        self.join_metrics.output_batches.value(),
+                        self.join_metrics.join_time.value()
+                    );
+
+                    Poll::Ready(None)
+                }
+            };
+        }
+    }
+
+    fn collect_build_side(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Result<StatefulStreamResult<Option<RecordBatch>>>> {
+        let build_timer = self.join_metrics.build_time.timer();
+        // build hash table from left (build) side, if not yet done
+        let left_data = ready!(self.left_fut.get_shared(cx))?;
+        build_timer.done();
+
+        log::info!(
+            "{:?} is done building a hash table from {:?} batches, {:?} rows, took {:?} nanos",
+            std::thread::current().id(),
+            self.join_metrics.build_input_batches.value(),
+            self.join_metrics.build_input_rows.value(),
+            self.join_metrics.build_time.value()
+        );
+
+        self.state = IntervalJoinStreamState::FetchProbeBatch;
+        self.build_side = Some(left_data);
+
+        Poll::Ready(Ok(StatefulStreamResult::Continue))
+    }
+
+    fn fetch_probe_batch(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Result<StatefulStreamResult<Option<RecordBatch>>>> {
+        match ready!(self.right.poll_next_unpin(cx)) {
+            None => {
+                self.state = IntervalJoinStreamState::ExhaustedProbeSide;
+            }
+            Some(Ok(batch)) => {
+                // Precalculate hash values for fetched batch
+                let rights = self
+                    .on_right
+                    .iter()
+                    .map(|c| c.evaluate(&batch)?.into_array(batch.num_rows()))
+                    .collect::<Result<Vec<_>>>()?;
+
+                self.hashes_buffer.clear();
+                self.hashes_buffer.resize(batch.num_rows(), 0);
+
+                create_hashes(&rights, &self.random_state, &mut self.hashes_buffer)?;
+
+                self.join_metrics.input_batches.add(1);
+                self.join_metrics.input_rows.add(batch.num_rows());
+
+                log::info!(
+                    "{:?} is done reading batch {:?}",
+                    std::thread::current().id(),
+                    self.join_metrics.input_batches.value()
+                );
+
+                self.state =
+                    IntervalJoinStreamState::ProcessProbeBatch(ProcessProbeBatchState { batch });
+            }
+            Some(Err(err)) => return Poll::Ready(Err(err)),
+        };
+
+        Poll::Ready(Ok(StatefulStreamResult::Continue))
+    }
+
+    fn process_probe_batch(&mut self) -> Result<StatefulStreamResult<Option<RecordBatch>>> {
+        let state = self.state.try_as_process_probe_batch_mut()?;
+        let build_side = match self.build_side.as_ref() {
+            Some(build_side) => Ok(build_side),
+            None => internal_err!("Expected build side in ready state"),
+        }?;
+
+        let timer = self.join_metrics.join_time.timer();
+
+        let start = evaluate_as_i32(self.right_interval.start.clone(), &state.batch)?;
+        let end = evaluate_as_i32(self.right_interval.end.clone(), &state.batch)?;
+
+        let mut left_builder = UInt32BufferBuilder::new(0);
+        let mut right_builder = UInt32BufferBuilder::new(0);
+
+        for (i, hash_val) in self.hashes_buffer.iter().enumerate() {
+            build_side
+                .hash_map
+                .get(*hash_val, start.value(i), end.value(i), |pos| {
+                    left_builder.append(pos as u32);
+                    right_builder.append(i as u32);
+                })
+        }
+
+        let left_indexes: UInt32Array = PrimitiveArray::new(left_builder.finish().into(), None);
+        let right_indexes: UInt32Array = PrimitiveArray::new(right_builder.finish().into(), None);
+
+        let mut columns: Vec<Arc<dyn Array>> = Vec::with_capacity(self.schema.fields().len());
+
+        for c in build_side.batch.columns() {
+            let taken = datafusion::arrow::compute::take(c, &left_indexes, None)?;
+            columns.push(taken);
+        }
+
+        for c in state.batch.columns() {
+            let taken = datafusion::arrow::compute::take(c, &right_indexes, None)?;
+            columns.push(taken);
+        }
+
+        let result = RecordBatch::try_new(self.schema.clone(), columns)?;
+
+        self.join_metrics.output_batches.add(1);
+        self.join_metrics.output_rows.add(result.num_rows());
+        timer.done();
+
+        log::info!(
+            "{:?} is done processing batch {:?} with {:?} output rows",
+            std::thread::current().id(),
+            self.join_metrics.output_batches.value(),
+            result.num_rows()
+        );
+
+        self.state = IntervalJoinStreamState::FetchProbeBatch;
+
+        Ok(StatefulStreamResult::Ready(Some(result)))
+    }
+
     fn poll_next_impl(
         &mut self,
         cx: &mut std::task::Context<'_>,
@@ -916,6 +1098,7 @@ impl IntervalJoinStream {
                         .map(|c| c.evaluate(&batch)?.into_array(batch.num_rows()))
                         .collect::<Result<Vec<_>>>();
 
+                    self.join_metrics.output_batches.add(1);
                     let rights = match rights {
                         Ok(rights) => rights,
                         Err(e) => return Some(Err(e)),
@@ -987,6 +1170,12 @@ impl IntervalJoinStream {
                     let result = RecordBatch::try_new(self.schema.clone(), columns)
                         .map_err(|e| DataFusionError::ArrowError(e, None));
 
+                    // log::info!(
+                    //     "Thread: {:?} is done process batch {:?}",
+                    //     std::thread::current().id(),
+                    //     self.join_metrics.output_batches
+                    // );
+
                     Some(result)
                 }
                 other => other,
@@ -1007,7 +1196,7 @@ impl Stream for IntervalJoinStream {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        self.poll_next_impl(cx)
+        self.poll_next_impl_stream(cx)
     }
 }
 

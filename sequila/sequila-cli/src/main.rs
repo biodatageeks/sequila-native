@@ -12,7 +12,9 @@ async fn main() -> Result<()> {
     env_logger::init();
     let mut options = ConfigOptions::new();
     options.extensions.insert(SequilaConfig::default());
-    let config = SessionConfig::from(options).with_information_schema(true);
+    let config = SessionConfig::from(options)
+        .with_information_schema(true)
+        .with_repartition_joins(false);
     let rocket = emojis::get_by_shortcode("rocket").unwrap();
     info!("Starting SeQuiLa-native CLI {rocket}...");
     let mut ctx = SessionContext::new_with_sequila(config);
