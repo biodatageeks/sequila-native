@@ -25,6 +25,14 @@ D SELECT count(*) FROM read_csv('/Users/mwiewior/CLionProjects/sequila-native/sa
 │    154374873 │
 └──────────────┘
 Run Time (s): real 1.967 user 1.948447 sys 0.015313
+
+
+
+SELECT count(*) 
+FROM 
+      read_parquet('/Users/mwiewior/CLionProjects/sequila-native/sandbox/chainVicPac2.parquet/*.parquet') a, 
+      read_parquet('/Users/mwiewior/CLionProjects/sequila-native/sandbox/chainRn4.parquet/*.parquet') b 
+WHERE (a.column0=b.column0 and a.column2>=b.column1 and a.column1<=b.column2);
 ```
 
 ## SeQuiLa-native
@@ -35,12 +43,12 @@ set sequila.interval_join_algorithm to 'coitrees';
 
 CREATE EXTERNAL TABLE chainRn4_chr1
 STORED AS CSV
-LOCATION '/Users/mwiewior/CLionProjects/sequila-native/sandbox/chainRn4_chr1.csv'
+LOCATION '/Users/mwiewior/research/data/AIListTestData/sequila-native/chainRn4.bed'
 OPTIONS ('has_header' 'true', 'format.delimiter' '\t' );
 
 CREATE EXTERNAL TABLE chainVicPac2_chr1
 STORED AS CSV
-LOCATION '/Users/mwiewior/CLionProjects/sequila-native/sandbox/chainVicPac2_chr1.csv'
+LOCATION '/Users/mwiewior/research/data/AIListTestData/sequila-native/chainVicPac2.bed'
 OPTIONS ('has_header' 'true', 'format.delimiter' '\t' );
 
 select count(*) from `chainRn4_chr1` a, `chainVicPac2_chr1` b where (a.column0=b.column0 and a.column2>=b.column1 and a.column1<=b.column2);
@@ -111,3 +119,19 @@ LOCATION '/Users/mwiewior/CLionProjects/sequila-native/sandbox/chainXenTro3Link.
 explain select count(*) from test a, test2 b where (a._c0=b._c0 and a._c2>=b._c1 and a._c1<=b._c2);
 ```
 
+```
+
+CREATE EXTERNAL TABLE chainVicPac2
+STORED AS PARQUET
+LOCATION '/Users/mwiewior/CLionProjects/sequila-native/sandbox/chainVicPac2.parquet';
+       
+CREATE EXTERNAL TABLE chainRn4
+STORED AS PARQUET
+LOCATION '/Users/mwiewior/CLionProjects/sequila-native/sandbox/chainRn4.parquet';       
+
+
+set datafusion.execution.target_partitions=8;
+set sequila.prefer_interval_join to true;
+set sequila.interval_join_algorithm to 'IntervalTree';
+set datafusion.optimizer.repartition_joins to false;   
+```
