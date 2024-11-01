@@ -13,8 +13,7 @@ use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef};
 use datafusion::common::hash_utils::create_hashes;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::{
-    internal_datafusion_err, internal_err, plan_err, project_schema, DataFusionError, JoinSide,
-    JoinType, Result, Statistics,
+    internal_err, plan_err, project_schema, DataFusionError, JoinSide, JoinType, Result, Statistics,
 };
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
@@ -931,7 +930,7 @@ impl IntervalJoinStreamState {
 }
 
 impl IntervalJoinStream {
-    fn poll_next_impl_stream(
+    fn poll_next_impl(
         &mut self,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Result<RecordBatch>>> {
@@ -1077,110 +1076,6 @@ impl IntervalJoinStream {
 
         Ok(StatefulStreamResult::Ready(Some(result)))
     }
-
-    fn poll_next_impl(
-        &mut self,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Result<RecordBatch>>> {
-        let left_data: &JoinLeftData = match ready!(self.left_fut.get(cx)) {
-            Ok(left_data) => left_data,
-            Err(e) => return std::task::Poll::Ready(Some(Err(e))),
-        };
-
-        self.right
-            .poll_next_unpin(cx)
-            .map(|maybe_batch| match maybe_batch {
-                // f: Option<Result<RecordBatch>> => Option<Result<RecordBatch>>
-                Some(Ok(batch)) => {
-                    let rights = self
-                        .on_right
-                        .iter()
-                        .map(|c| c.evaluate(&batch)?.into_array(batch.num_rows()))
-                        .collect::<Result<Vec<_>>>();
-
-                    self.join_metrics.output_batches.add(1);
-                    let rights = match rights {
-                        Ok(rights) => rights,
-                        Err(e) => return Some(Err(e)),
-                    };
-
-                    let mut hashes_buffer: Vec<u64> = Vec::new();
-                    hashes_buffer.clear();
-                    hashes_buffer.resize(batch.num_rows(), 0);
-
-                    if let Err(e) = create_hashes(&rights, &self.random_state, &mut hashes_buffer) {
-                        return Some(Err(e));
-                    }
-
-                    let start = evaluate_as_i32(self.right_interval.start.clone(), &batch);
-
-                    let start = match start {
-                        Ok(start) => start,
-                        Err(e) => return Some(Err(e)),
-                    };
-
-                    let end = evaluate_as_i32(self.right_interval.end.clone(), &batch);
-
-                    let end = match end {
-                        Ok(end) => end,
-                        Err(e) => return Some(Err(e)),
-                    };
-
-                    let mut left_builder = UInt32BufferBuilder::new(0);
-                    let mut right_builder = UInt32BufferBuilder::new(0);
-
-                    for (i, hash_val) in hashes_buffer.into_iter().enumerate() {
-                        left_data
-                            .hash_map
-                            .get(hash_val, start.value(i), end.value(i), |pos| {
-                                left_builder.append(pos as u32);
-                                right_builder.append(i as u32);
-                            })
-                    }
-
-                    let left_indexes: UInt32Array =
-                        PrimitiveArray::new(left_builder.finish().into(), None);
-                    let right_indexes: UInt32Array =
-                        PrimitiveArray::new(right_builder.finish().into(), None);
-
-                    let mut columns: Vec<Arc<dyn Array>> =
-                        Vec::with_capacity(self.schema.fields().len());
-
-                    //TODO: refactor
-                    for c in left_data.batch.columns() {
-                        let taken = datafusion::arrow::compute::take(c, &left_indexes, None);
-                        if let Ok(value) = taken {
-                            columns.push(value);
-                        } else {
-                            let err = DataFusionError::ArrowError(taken.unwrap_err(), None);
-                            return Some(Err(err));
-                        }
-                    }
-
-                    for c in batch.columns() {
-                        let taken = datafusion::arrow::compute::take(c, &right_indexes, None);
-                        if let Ok(value) = taken {
-                            columns.push(value);
-                        } else {
-                            let err = DataFusionError::ArrowError(taken.unwrap_err(), None);
-                            return Some(Err(err));
-                        }
-                    }
-
-                    let result = RecordBatch::try_new(self.schema.clone(), columns)
-                        .map_err(|e| DataFusionError::ArrowError(e, None));
-
-                    // log::info!(
-                    //     "Thread: {:?} is done process batch {:?}",
-                    //     std::thread::current().id(),
-                    //     self.join_metrics.output_batches
-                    // );
-
-                    Some(result)
-                }
-                other => other,
-            })
-    }
 }
 
 impl RecordBatchStream for IntervalJoinStream {
@@ -1196,7 +1091,7 @@ impl Stream for IntervalJoinStream {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        self.poll_next_impl_stream(cx)
+        self.poll_next_impl(cx)
     }
 }
 
