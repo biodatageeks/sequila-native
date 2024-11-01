@@ -789,7 +789,18 @@ impl IntervalJoinAlgorithm {
             IntervalJoinAlgorithm::Coitrees(hashmap) => {
                 use coitrees::IntervalTree;
                 if let Some(tree) = hashmap.get(&k) {
-                    tree.query(start, end, |node| f((*node).metadata));
+                    tree.query(start, end, |node| {
+                        #[cfg(all(target_feature = "neon", not(feature = "nosimd")))]
+                        let position: Position = *node.metadata;
+                        #[cfg(all(
+                            not(feature = "nosimd"),
+                            not(target_feature = "avx2"),
+                            not(target_feature = "neon")
+                        ))]
+                        let position: Position = node.metadata;
+
+                        f(position)
+                    });
                 }
             }
             IntervalJoinAlgorithm::IntervalTree(hashmap) => {
