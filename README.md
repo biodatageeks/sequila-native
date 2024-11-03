@@ -5,3 +5,8 @@ A set of native implementation of common bioinformatics algorithms to be used as
 ```bash
 RUST_LOG=info cargo run 
 ```
+
+# Run a sql file
+```bash
+RUST_LOG=info cargo run -p sequila-cli -- --file queries/q1-coitrees.sql
+```

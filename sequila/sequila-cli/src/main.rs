@@ -1,3 +1,4 @@
+use clap::Parser;
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigOptions;
 use datafusion::error::Result;
@@ -6,10 +7,33 @@ use datafusion_cli::exec;
 use datafusion_cli::print_options::PrintOptions;
 use log::info;
 use sequila_core::session_context::{SeQuiLaSessionExt, SequilaConfig};
+use std::path::Path;
+
+#[derive(Debug, Parser)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[clap(
+        short,
+        long,
+        num_args = 0..,
+        help = "Execute commands from file(s), then exit",
+        value_parser(parse_valid_file)
+    )]
+    file: Vec<String>,
+}
+
+fn parse_valid_file(dir: &str) -> Result<String, String> {
+    if Path::new(dir).is_file() {
+        Ok(dir.to_string())
+    } else {
+        Err(format!("Invalid file '{}'", dir))
+    }
+}
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
     env_logger::init();
+    let args = Args::parse();
     let mut options = ConfigOptions::new();
     options.extensions.insert(SequilaConfig::default());
     let config = SessionConfig::from(options)
@@ -24,10 +48,16 @@ async fn main() -> Result<()> {
         maxrows: datafusion_cli::print_options::MaxRows::Limited(100),
         color: true,
     };
-    exec::exec_from_repl(&mut ctx, &mut print_options)
-        .await
-        .map_err(|e| DataFusionError::External(Box::new(e)))
-        .expect("Error");
+
+    if !args.file.is_empty() {
+        exec::exec_from_files(&mut ctx, args.file, &print_options).await?;
+    } else {
+        exec::exec_from_repl(&mut ctx, &mut print_options)
+            .await
+            .map_err(|e| DataFusionError::External(Box::new(e)))
+            .expect("Error");
+    }
+
     Ok(())
 }
 
