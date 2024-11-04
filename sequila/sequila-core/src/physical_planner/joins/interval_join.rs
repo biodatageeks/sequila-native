@@ -1199,6 +1199,7 @@ mod tests {
     use datafusion::arrow::datatypes::{DataType, Field};
     use datafusion::assert_batches_sorted_eq;
     use datafusion::config::ConfigOptions;
+    use datafusion::logical_expr::SortExpr;
     use datafusion::prelude::{col, CsvReadOptions, Expr, SessionConfig, SessionContext};
     use datafusion::test_util::plan_and_collect;
 
@@ -1236,14 +1237,14 @@ mod tests {
         ]
     }
 
-    fn sort_by() -> Vec<Expr> {
+    fn sort_by() -> Vec<SortExpr> {
         vec![
-            col("reads_contig").sort(true, true),
-            col("reads_pos_start").sort(true, true),
-            col("reads_pos_end").sort(true, true),
-            col("target_contig").sort(true, true),
-            col("target_pos_start").sort(true, true),
-            col("target_pos_end").sort(true, true),
+            SortExpr::new(col("reads_contig"), true, true),
+            SortExpr::new(col("reads_pos_start"), true, true),
+            SortExpr::new(col("reads_pos_end"), true, true),
+            SortExpr::new(col("target_contig"), true, true),
+            SortExpr::new(col("target_pos_start"), true, true),
+            SortExpr::new(col("target_pos_end"), true, true),
         ]
     }
 
