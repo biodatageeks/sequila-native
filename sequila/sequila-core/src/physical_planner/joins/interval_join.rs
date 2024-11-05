@@ -308,21 +308,10 @@ impl IntervalJoinExec {
 
         // If contains projection, update the PlanProperties.
         if let Some(projection) = projection {
-            let projection_exprs = project_index_to_exprs(projection, &schema);
             // construct a map from the input expressions to the output expression of the Projection
-            let projection_mapping = ProjectionMapping::try_new(&projection_exprs, &schema)?;
+            let projection_mapping = ProjectionMapping::from_indices(projection, &schema)?;
             let out_schema = project_schema(&schema, Some(projection))?;
-            if let Partitioning::Hash(exprs, part) = output_partitioning {
-                let normalized_exprs = exprs
-                    .iter()
-                    .map(|expr| {
-                        eq_properties
-                            .project_expr(expr, &projection_mapping)
-                            .unwrap_or_else(|| Arc::new(UnKnownColumn::new(&expr.to_string())))
-                    })
-                    .collect();
-                output_partitioning = Partitioning::Hash(normalized_exprs, part);
-            }
+            output_partitioning = output_partitioning.project(&projection_mapping, &eq_properties);
             eq_properties = eq_properties.project(&projection_mapping, out_schema);
         }
         Ok(PlanProperties::new(
@@ -331,22 +320,6 @@ impl IntervalJoinExec {
             mode,
         ))
     }
-}
-
-fn project_index_to_exprs(
-    projection_index: &[usize],
-    schema: &SchemaRef,
-) -> Vec<(Arc<dyn PhysicalExpr>, String)> {
-    projection_index
-        .iter()
-        .map(|index| {
-            let field = schema.field(*index);
-            (
-                Arc::new(Column::new(field.name(), *index)) as Arc<dyn PhysicalExpr>,
-                field.name().to_owned(),
-            )
-        })
-        .collect::<Vec<_>>()
 }
 
 impl DisplayAs for IntervalJoinExec {
