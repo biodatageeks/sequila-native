@@ -3,7 +3,7 @@ A set of native implementation of common bioinformatics algorithms to be used as
 
 #
 ```bash
-RUST_LOG=info cargo run 
+RUSTFLAGS="-C target-cpu=native" RUST_LOG=info cargo run --release
 ```
 
 # Run a sql file
