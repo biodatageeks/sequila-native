@@ -157,7 +157,11 @@ fn estimate_join_cardinality(
     on: &JoinOn,
 ) -> Option<PartialJoinStatistics> {
     match join_type {
-        JoinType::Inner | JoinType::Left | JoinType::Right | JoinType::Full => {
+        JoinType::Inner
+        | JoinType::Left
+        | JoinType::Right
+        | JoinType::Full
+        | JoinType::LeftMark => {
             let (left_col_stats, right_col_stats) = on
                 .iter()
                 .map(|(left, right)| {
@@ -488,7 +492,9 @@ pub(crate) fn symmetric_join_output_partitioning(
     let left_partitioning = left.output_partitioning();
     let right_partitioning = right.output_partitioning();
     match join_type {
-        JoinType::Left | JoinType::LeftSemi | JoinType::LeftAnti => left_partitioning.clone(),
+        JoinType::Left | JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark => {
+            left_partitioning.clone()
+        }
         JoinType::RightSemi | JoinType::RightAnti => right_partitioning.clone(),
         JoinType::Inner | JoinType::Right => {
             adjust_right_output_partitioning(right_partitioning, left_columns_len)

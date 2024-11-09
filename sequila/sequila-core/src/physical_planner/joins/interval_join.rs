@@ -278,7 +278,11 @@ impl IntervalJoinExec {
                     adjust_right_output_partitioning(right.output_partitioning(), left_columns_len)
                 }
                 JoinType::RightSemi | JoinType::RightAnti => right.output_partitioning().clone(),
-                JoinType::Left | JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Full => {
+                JoinType::Left
+                | JoinType::LeftSemi
+                | JoinType::LeftAnti
+                | JoinType::LeftMark
+                | JoinType::Full => {
                     Partitioning::UnknownPartitioning(right.output_partitioning().partition_count())
                 }
             },
