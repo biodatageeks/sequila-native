@@ -18,11 +18,11 @@ sequila-cli = { path = "sequila/sequila-cli" }
 # datafusion = "40.0.0"
 # datafusion-cli = "40.0.0"
 # using git repository to be compatable with datafution-comet
-datafusion = { default-features = false, git = "https://github.com/apache/datafusion.git", rev = "43.0.0", features = [
+datafusion = { default-features = false, version = "43.0.0", features = [
   "unicode_expressions",
   "crypto_expressions",
 ] }
-datafusion-cli = { default-features = false, git = "https://github.com/apache/datafusion.git", rev = "43.0.0" }
+datafusion-cli = { default-features = false, version = "43.0.0" }
 tokio = { version = "1.36.0", features = ["rt-multi-thread"] }
 env_logger = "0.11.5"
 log = "0.4.22"
