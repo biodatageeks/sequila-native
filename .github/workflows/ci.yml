@@ -30,6 +30,8 @@ jobs:
         run: cargo test
       - name: "cargo clippy"
         run: cargo clippy --all --tests --all-features --no-deps
+    env:
+      RUSTFLAGS: "-Ctarget-cpu=native"
 
   fmt:
     name: fmt
