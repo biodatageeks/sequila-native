@@ -24,12 +24,16 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      - name: "cargo build (release)"
+        run: cargo build --release
       - name: "cargo build"
         run: cargo build
       - name: "cargo test"
         run: cargo test
       - name: "cargo clippy"
         run: cargo clippy --all --tests --all-features --no-deps
+    env:
+      RUSTFLAGS: "-Ctarget-cpu=native"
 
   fmt:
     name: fmt
