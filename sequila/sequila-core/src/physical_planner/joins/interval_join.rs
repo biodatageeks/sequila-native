@@ -770,9 +770,22 @@ impl IntervalJoinAlgorithm {
                 use coitrees::IntervalTree;
                 if let Some(tree) = hashmap.get(&k) {
                     tree.query(start, end, |node| {
-                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        // for Apple M1+(both optimized and not) and optimized (target-cpu=native) on Linux x64
+                        #[cfg(any(
+                            all(target_os = "macos", target_arch = "aarch64"),
+                            all(
+                                target_os = "linux",
+                                target_arch = "x86_64",
+                                target_feature = "avx"
+                            )
+                        ))]
                         let position: Position = *node.metadata;
-                        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                        // unoptimized on Linux x64 (without target-cpu=native)
+                        #[cfg(all(
+                            target_os = "linux",
+                            target_arch = "x86_64",
+                            not(target_feature = "avx")
+                        ))]
                         let position: Position = node.metadata;
                         f(position)
                     });
