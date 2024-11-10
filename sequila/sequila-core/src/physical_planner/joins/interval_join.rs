@@ -923,7 +923,7 @@ impl IntervalJoinStream {
                     handle_state!(self.process_probe_batch())
                 }
                 IntervalJoinStreamState::ExhaustedProbeSide => {
-                    log::info!("{:?} finished execution, total processed batches: {:?}, total join time: {:?} nanos",
+                    log::info!("{:?} finished execution, total processed batches: {:?}, total join time: {:?} ns",
                         std::thread::current().id(),
                         self.join_metrics.output_batches.value(),
                         self.join_metrics.join_time.value()
@@ -945,7 +945,7 @@ impl IntervalJoinStream {
         build_timer.done();
 
         log::info!(
-            "{:?} is done building a hash table from {:?} batches, {:?} rows, took {:?} nanos",
+            "{:?} is done building a hash table from {:?} batches, {:?} rows, took {:?} ns",
             std::thread::current().id(),
             self.join_metrics.build_input_batches.value(),
             self.join_metrics.build_input_rows.value(),
@@ -982,7 +982,7 @@ impl IntervalJoinStream {
                 self.join_metrics.input_batches.add(1);
                 self.join_metrics.input_rows.add(batch.num_rows());
 
-                log::info!(
+                log::debug!(
                     "{:?} is done reading batch {:?}",
                     std::thread::current().id(),
                     self.join_metrics.input_batches.value()
@@ -1042,7 +1042,7 @@ impl IntervalJoinStream {
         self.join_metrics.output_rows.add(result.num_rows());
         timer.done();
 
-        log::info!(
+        log::debug!(
             "{:?} is done processing batch {:?} with {:?} output rows",
             std::thread::current().id(),
             self.join_metrics.output_batches.value(),
