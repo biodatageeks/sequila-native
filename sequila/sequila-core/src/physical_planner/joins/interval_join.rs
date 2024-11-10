@@ -770,15 +770,10 @@ impl IntervalJoinAlgorithm {
                 use coitrees::IntervalTree;
                 if let Some(tree) = hashmap.get(&k) {
                     tree.query(start, end, |node| {
-                        #[cfg(all(target_feature = "neon", not(feature = "nosimd")))]
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                         let position: Position = *node.metadata;
-                        #[cfg(all(
-                            not(feature = "nosimd"),
-                            not(target_feature = "avx2"),
-                            not(target_feature = "neon")
-                        ))]
+                        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
                         let position: Position = node.metadata;
-
                         f(position)
                     });
                 }
