@@ -37,11 +37,11 @@ use fnv::FnvHashMap;
 use futures::{ready, Stream, StreamExt, TryStreamExt};
 use std::any::Any;
 use std::collections::HashMap;
-use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::mem::size_of;
 use std::sync::Arc;
 use std::task::Poll;
+use std::{fmt, usize};
 type Position = usize;
 
 #[derive(Debug)]
@@ -923,10 +923,10 @@ impl IntervalJoinStream {
                     handle_state!(self.process_probe_batch())
                 }
                 IntervalJoinStreamState::ExhaustedProbeSide => {
-                    log::info!("{:?} finished execution, total processed batches: {:?}, total join time: {:?} ns",
+                    log::info!("{:?} finished execution, total processed batches: {:?}, total join time: {:?} ms",
                         std::thread::current().id(),
                         self.join_metrics.output_batches.value(),
-                        self.join_metrics.join_time.value()
+                        self.join_metrics.join_time.value()/usize::pow(10, 6)
                     );
 
                     Poll::Ready(None)
@@ -945,11 +945,11 @@ impl IntervalJoinStream {
         build_timer.done();
 
         log::info!(
-            "{:?} is done building a hash table from {:?} batches, {:?} rows, took {:?} ns",
+            "{:?} is done building a hash table from {:?} batches, {:?} rows, took {:?} ms",
             std::thread::current().id(),
             self.join_metrics.build_input_batches.value(),
             self.join_metrics.build_input_rows.value(),
-            self.join_metrics.build_time.value()
+            self.join_metrics.build_time.value() / usize::pow(10, 6)
         );
 
         self.state = IntervalJoinStreamState::FetchProbeBatch;
