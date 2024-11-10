@@ -16,7 +16,7 @@ env:
 jobs:
   build-and-test:
     name: build and test
-    runs-on: [self-hosted, Linux, huge-c10m25]
+    runs-on: [self-hosted, Linux, openstack-ii]
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
@@ -33,7 +33,7 @@ jobs:
 
   fmt:
     name: fmt
-    runs-on: [self-hosted, Linux, huge-c10m25]
+    runs-on: [self-hosted, Linux, openstack-ii]
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
