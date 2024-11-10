@@ -761,6 +761,25 @@ impl IntervalJoinAlgorithm {
         }
     }
 
+    /// unoptimized on Linux x64 (without target-cpu=native)
+    #[cfg(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        not(target_feature = "avx")
+    ))]
+    fn extract_position(&self, node: &coitrees::IntervalNode<Position, u32>) -> Position {
+        node.metadata
+    }
+
+    /// for Apple M1+(both optimized and not) and optimized (target-cpu=native) on Linux x64
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64", target_feature = "avx")
+    ))]
+    fn extract_position(&self, node: &coitrees::Interval<&Position>) -> Position {
+        *node.metadata
+    }
+
     fn get<F>(&self, k: u64, start: i32, end: i32, mut f: F)
     where
         F: FnMut(Position),
@@ -770,23 +789,7 @@ impl IntervalJoinAlgorithm {
                 use coitrees::IntervalTree;
                 if let Some(tree) = hashmap.get(&k) {
                     tree.query(start, end, |node| {
-                        // for Apple M1+(both optimized and not) and optimized (target-cpu=native) on Linux x64
-                        #[cfg(any(
-                            all(target_os = "macos", target_arch = "aarch64"),
-                            all(
-                                target_os = "linux",
-                                target_arch = "x86_64",
-                                target_feature = "avx"
-                            )
-                        ))]
-                        let position: Position = *node.metadata;
-                        // unoptimized on Linux x64 (without target-cpu=native)
-                        #[cfg(all(
-                            target_os = "linux",
-                            target_arch = "x86_64",
-                            not(target_feature = "avx")
-                        ))]
-                        let position: Position = node.metadata;
+                        let position: Position = self.extract_position(node);
                         f(position)
                     });
                 }
