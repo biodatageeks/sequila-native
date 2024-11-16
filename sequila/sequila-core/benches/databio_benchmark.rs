@@ -42,12 +42,30 @@ pub fn databio_benchmark(c: &mut Criterion) {
             name: String::from("exons"),
             non_flat: 2,
         },
-        // Table { name: String::from("chainOrnAna1"), non_flat: 6 },
-        // Table { name: String::from("chainVicPac2"), non_flat: 8 },
-        // Table { name: String::from("chainXenTro3Link"), non_flat: 7 },
-        // Table { name: String::from("chainMonDom5Link"), non_flat: 7 },
-        // Table { name: String::from("ex-anno"), non_flat: 2 },
-        // Table { name: String::from("ex-rna"), non_flat: 7 }
+        Table {
+            name: String::from("chainOrnAna1"),
+            non_flat: 6,
+        },
+        Table {
+            name: String::from("chainVicPac2"),
+            non_flat: 8,
+        },
+        Table {
+            name: String::from("chainXenTro3Link"),
+            non_flat: 7,
+        },
+        Table {
+            name: String::from("chainMonDom5Link"),
+            non_flat: 7,
+        },
+        Table {
+            name: String::from("ex-anno"),
+            non_flat: 2,
+        },
+        Table {
+            name: String::from("ex-rna"),
+            non_flat: 7,
+        },
     ];
 
     const QUERY: &str = r#"
@@ -107,11 +125,6 @@ pub fn databio_benchmark(c: &mut Criterion) {
             }
         }
     }
-
-    // c.bench_function("fib 20", |b| b.iter(|| {let _:u16 = rng.gen();}));
-    // let ctx = create_context(algorithm: Option<Algorithm>);
-    // group.bench_function("fib 20", |b| b.iter(|| {let _:u16 = rng.gen();}));
-    // group.bench_function("fib 10", |b| b.iter(|| {let _:u16 = rng.gen();}));
     group.finish();
 }
 

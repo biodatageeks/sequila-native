@@ -17,7 +17,7 @@ permissions:
 jobs:
   benchmark:
     name: Run SeQuiLa-native benchmark
-    runs-on: [self-hosted, Linux, openstack-ii]
+    runs-on: [self-hosted, Linux, huge-c10m25]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -28,7 +28,7 @@ jobs:
       - name: Store benchmark result
         uses: benchmark-action/github-action-benchmark@v1
         with:
-          name: Criterion.rs Benchmark
+          name: Run SeQuiLa-native benchmark
           tool: 'cargo'
           output-file-path: output.txt
           github-token: ${{ secrets.GITHUB_TOKEN }}
