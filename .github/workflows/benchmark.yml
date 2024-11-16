@@ -1,4 +1,4 @@
-name: Criterion.rs Example
+name: SeQuiLa-native benchmark
 on:
   push:
     branches:

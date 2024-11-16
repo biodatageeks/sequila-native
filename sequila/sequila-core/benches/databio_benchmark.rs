@@ -89,7 +89,7 @@ pub fn databio_benchmark(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("Algorithms");
     group.sample_size(10);
-    group.measurement_time(std::time::Duration::from_secs(300));
+    group.measurement_time(std::time::Duration::from_secs(900));
     group.significance_level(0.1);
 
     for t_1 in &tables {
