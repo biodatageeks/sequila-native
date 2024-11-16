@@ -1,0 +1,20 @@
+[package]
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+name = "sequila-cli"
+readme.workspace = true
+repository.workspace = true
+version.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+sequila-core.workspace = true
+datafusion.workspace = true
+datafusion-cli.workspace = true
+tokio.workspace = true
+log.workspace = true
+env_logger.workspace = true
+emojis.workspace = true
+clap = { version = "4.5.20", features = ["derive"] }

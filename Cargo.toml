@@ -1,0 +1,25 @@
+[workspace.package]
+edition = "2021"
+homepage = "https://biodatageeks.github.io/sequila/"
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/biodatageeks/sequila-native.git"
+version = "0.1.0"
+rust-version = "1.76"
+
+[workspace]
+members = ["sequila/sequila-cli", "sequila/sequila-core"]
+resolver = "2"
+
+[workspace.dependencies]
+sequila-core = { path = "sequila/sequila-core" }
+sequila-cli = { path = "sequila/sequila-cli" }
+datafusion = { default-features = false, version = "43.0.0", features = [
+  "unicode_expressions",
+  "crypto_expressions",
+] }
+datafusion-cli = { default-features = false, version = "43.0.0" }
+tokio = { version = "1.36.0", features = ["rt-multi-thread"] }
+env_logger = "0.11.5"
+log = "0.4.22"
+emojis = "0.6.3"
