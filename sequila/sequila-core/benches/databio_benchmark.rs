@@ -18,15 +18,6 @@ pub struct Table {
     table_size: TableSize,
 }
 
-impl Table {
-    fn new(name: String, non_flat: u8, table_size: TableSize) -> Self {
-        Self {
-            name,
-            non_flat,
-            table_size,
-        }
-    }
-}
 fn create_context(algorithm: Option<Algorithm>) -> SessionContext {
     let options = ConfigOptions::new();
 
@@ -151,7 +142,7 @@ pub fn databio_benchmark(c: &mut Criterion) {
                                 .await
                                 .expect("");
                             let df = ctx.sql(QUERY).await.expect("");
-                            let a = df.collect().await.expect("");
+                            let _a = df.collect().await.expect("");
                         });
                     });
                 }
