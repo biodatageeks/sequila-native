@@ -2,15 +2,29 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::config::ConfigOptions;
 use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
 use sequila_core::session_context::{Algorithm, SeQuiLaSessionExt, SequilaConfig};
+use std::env;
+use strum_macros::Display;
+
+#[derive(PartialEq, Eq, Display)]
+enum TableSize {
+    Small,  // <2k
+    Medium, // 2-10k
+    Large,  // >10k
+}
 
 pub struct Table {
     name: String,
     non_flat: u8,
+    table_size: TableSize,
 }
 
 impl Table {
-    fn new(name: String, non_flat: u8) -> Self {
-        Self { name, non_flat }
+    fn new(name: String, non_flat: u8, table_size: TableSize) -> Self {
+        Self {
+            name,
+            non_flat,
+            table_size,
+        }
     }
 }
 fn create_context(algorithm: Option<Algorithm>) -> SessionContext {
@@ -30,41 +44,52 @@ fn create_context(algorithm: Option<Algorithm>) -> SessionContext {
 }
 
 pub fn databio_benchmark(c: &mut Criterion) {
-    let root_path = String::from("/data/bench_data/databio/");
-    // let root_path = String::from("/Users/mwiewior/research/git/openstack-bdg-runners/ansible/roles/gha_runner/files/databio/");
+    let root_path = env::var("BENCH_DATA_ROOT").unwrap_or("/data/bench_data/databio/".to_string());
     let tables = [
-        // Table { name: String::from("chainRn4"), non_flat: 6 },
+        Table {
+            name: String::from("chainRn4"),
+            non_flat: 6,
+            table_size: TableSize::Medium,
+        },
         Table {
             name: String::from("fBrain-DS14718"),
             non_flat: 1,
+            table_size: TableSize::Small,
         },
         Table {
             name: String::from("exons"),
             non_flat: 2,
+            table_size: TableSize::Small,
         },
         Table {
             name: String::from("chainOrnAna1"),
             non_flat: 6,
+            table_size: TableSize::Medium,
         },
         Table {
             name: String::from("chainVicPac2"),
             non_flat: 8,
+            table_size: TableSize::Medium,
         },
         Table {
             name: String::from("chainXenTro3Link"),
             non_flat: 7,
+            table_size: TableSize::Large,
         },
         Table {
             name: String::from("chainMonDom5Link"),
             non_flat: 7,
+            table_size: TableSize::Large,
         },
         Table {
             name: String::from("ex-anno"),
             non_flat: 2,
+            table_size: TableSize::Small,
         },
         Table {
             name: String::from("ex-rna"),
             non_flat: 7,
+            table_size: TableSize::Medium,
         },
     ];
 
@@ -74,7 +99,11 @@ pub fn databio_benchmark(c: &mut Criterion) {
             FROM
                 s1 a, s2 b
             WHERE
-                (a.contig=b.contig AND a.pos_end>=b.pos_start AND a.pos_start<=b.pos_end)
+                a.contig=b.contig
+            AND
+                a.pos_end>=b.pos_start
+            AND
+                a.pos_start<=b.pos_end
         "#;
 
     let algorithms = [
@@ -94,19 +123,23 @@ pub fn databio_benchmark(c: &mut Criterion) {
 
     for t_1 in &tables {
         for t_2 in &tables {
-            if (t_1.name != t_2.name) {
+            if t_1.name != t_2.name && t_1.table_size != TableSize::Large {
                 let s1_path = root_path.clone() + &t_1.name + &String::from("/*.parquet");
                 let s2_path = root_path.clone() + &t_2.name + &String::from("/*.parquet");
                 for alg in algorithms {
                     let test_name = alg.unwrap().to_string()
                         + &String::from("-")
-                        + &t_1.name.clone()
+                        + &t_1.table_size.to_string()
                         + &String::from("-")
-                        + &t_2.name.clone()
+                        + &t_2.table_size.to_string()
                         + &String::from("-")
-                        + &t_1.non_flat.to_string().clone()
+                        + &t_1.non_flat.to_string()
                         + &String::from("-")
-                        + &t_2.non_flat.to_string().clone();
+                        + &t_2.non_flat.to_string()
+                        + &String::from("-")
+                        + &t_1.name.split("-").next().unwrap().to_string()
+                        + &String::from("-")
+                        + &t_2.name.split("-").next().unwrap().to_string();
                     print!("test {test_name} ... ");
                     group.bench_function(test_name, |b| {
                         b.to_async(&runtime).iter(|| async {
