@@ -1,3 +1,4 @@
+use crate::physical_planner::intervals::{ColInterval, ColIntervals};
 use crate::physical_planner::joins::utils::symmetric_join_output_partitioning;
 use crate::physical_planner::joins::utils::{
     estimate_join_statistics, BuildProbeJoinMetrics, OnceAsync, OnceFut,
@@ -77,7 +78,7 @@ pub struct IntervalJoinExec {
     /// Filters which are applied while finding matching rows
     pub filter: Option<JoinFilter>,
     /// Columns that represent start/end of an interval
-    pub intervals: (ColInterval, ColInterval),
+    pub intervals: ColIntervals,
     /// How the join is performed (`OUTER`, `INNER`, etc)
     pub join_type: JoinType,
     /// The output schema for the join
@@ -112,7 +113,7 @@ impl IntervalJoinExec {
         right: Arc<dyn ExecutionPlan>,
         on: JoinOn,
         filter: Option<JoinFilter>,
-        intervals: (ColInterval, ColInterval),
+        intervals: ColIntervals,
         join_type: &JoinType,
         projection: Option<Vec<usize>>,
         partition_mode: PartitionMode,
@@ -443,7 +444,10 @@ impl ExecutionPlan for IntervalJoinExec {
             );
         }
 
-        let (left_interval, right_interval) = self.intervals.clone();
+        let ColIntervals {
+            left_interval,
+            right_interval,
+        } = self.intervals.clone();
 
         let join_metrics = BuildProbeJoinMetrics::new(partition, &self.metrics);
         let left_fut = match self.mode {
@@ -553,7 +557,7 @@ async fn collect_left_input(
     reservation: MemoryReservation,
     left_interval: ColInterval,
     algorithm: Algorithm,
-) -> datafusion::common::Result<JoinLeftData> {
+) -> Result<JoinLeftData> {
     let schema = left.schema();
 
     let (left_input, left_input_partition) = if let Some(partition) = partition {
@@ -1084,90 +1088,6 @@ impl Stream for IntervalJoinStream {
     }
 }
 
-trait FromPhysicalExpr {
-    fn to_binary(&self) -> Option<&BinaryExpr>;
-    fn to_column(&self) -> Option<&Column>;
-}
-
-impl FromPhysicalExpr for dyn PhysicalExpr {
-    fn to_binary(&self) -> Option<&BinaryExpr> {
-        self.as_any().downcast_ref::<BinaryExpr>()
-    }
-    fn to_column(&self) -> Option<&Column> {
-        self.as_any().downcast_ref::<Column>()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ColInterval {
-    start: Arc<dyn PhysicalExpr>,
-    end: Arc<dyn PhysicalExpr>,
-}
-
-impl ColInterval {
-    fn new(start: Arc<dyn PhysicalExpr>, end: Arc<dyn PhysicalExpr>) -> Self {
-        // assert_eq!(start.side, end.side, "both columns must be from the same side");
-        ColInterval { start, end }
-    }
-}
-
-fn get_with_source_index(
-    node: &Arc<dyn PhysicalExpr>,
-    indices: &[ColumnIndex],
-) -> Arc<dyn PhysicalExpr> {
-    node.clone()
-        .transform_up(|node| {
-            if let Some(column) = node.to_column() {
-                let new_column = Column::new(column.name(), indices[column.index()].index);
-                let result = Arc::new(new_column) as Arc<dyn PhysicalExpr>;
-                Ok(Transformed::yes(result))
-            } else {
-                Ok(Transformed::no(node))
-            }
-        })
-        .data()
-        .unwrap()
-}
-
-//TODO Add support for datatype, currently expected to be Int64
-pub fn parse_intervals(filter: &JoinFilter) -> Option<(ColInterval, ColInterval)> {
-    let expr = filter.expression().to_binary()?;
-    if matches!(expr.op(), Operator::And) {
-        let left = expr.left().to_binary()?;
-        let right = expr.right().to_binary()?;
-
-        let indices = filter.column_indices();
-
-        match (left.op(), right.op()) {
-            // assume that LEFT_END >= RIGHT_START in LEFT and LEFT_START <= RIGHT_END in RIGHT
-            (Operator::GtEq, Operator::LtEq) => Some((
-                ColInterval::new(
-                    get_with_source_index(right.left(), indices),
-                    get_with_source_index(left.left(), indices),
-                ),
-                ColInterval::new(
-                    get_with_source_index(left.right(), indices),
-                    get_with_source_index(right.right(), indices),
-                ),
-            )),
-            // assume that LEFT_START <= RIGHT_END in LEFT and LEFT_END >= RIGHT_START in RIGHT
-            (Operator::LtEq, Operator::GtEq) => Some((
-                ColInterval::new(
-                    get_with_source_index(left.left(), indices),
-                    get_with_source_index(right.left(), indices),
-                ),
-                ColInterval::new(
-                    get_with_source_index(right.right(), indices),
-                    get_with_source_index(left.right(), indices),
-                ),
-            )),
-            _ => None,
-        }
-    } else {
-        None
-    }
-}
-
 fn evaluate_as_i32(
     expr: Arc<dyn PhysicalExpr>,
     batch: &RecordBatch,
@@ -1399,84 +1319,6 @@ mod tests {
             assert_batches_sorted_eq!(expected, &res.clone().collect().await?);
         }
         Ok(())
-    }
-
-    #[test]
-    fn parse_filter_to_start_end() {
-        let lstart = "lstart";
-        let lend = "lend";
-        let rstart = "rstart";
-        let rend = "rend";
-
-        let gteq = BinaryExpr::new(
-            Arc::new(Column::new(lend, 1)),
-            Operator::GtEq,
-            Arc::new(Column::new(rstart, 2)),
-        );
-        let lteq = BinaryExpr::new(
-            Arc::new(Column::new(lstart, 0)),
-            Operator::LtEq,
-            Arc::new(CastExpr::new(
-                Arc::new(Column::new(rend, 3)),
-                DataType::Int64,
-                None,
-            )),
-        );
-        let expression = BinaryExpr::new(Arc::new(gteq), Operator::And, Arc::new(lteq));
-
-        let column_indices = JoinFilter::build_column_indices(vec![1, 2], vec![1, 2]);
-
-        let schema = Schema::new(vec![
-            Field::new(lstart, DataType::Int64, false),
-            Field::new(lend, DataType::Int64, false),
-            Field::new(rstart, DataType::Int64, false),
-            Field::new(rend, DataType::Int64, false),
-        ]);
-
-        // who builds it?
-        let filter = JoinFilter::new(Arc::new(expression), column_indices, schema);
-
-        let (left, right) = parse_intervals(&filter).expect("must present");
-        let expected_left = r#"ColInterval {
-    start: Column {
-        name: "lstart",
-        index: 1,
-    },
-    end: Column {
-        name: "lend",
-        index: 2,
-    },
-}"#;
-
-        assert_eq!(format!("{:#?}", left), expected_left);
-
-        let expected_right = r#"ColInterval {
-    start: Column {
-        name: "rstart",
-        index: 1,
-    },
-    end: CastExpr {
-        expr: Column {
-            name: "rend",
-            index: 2,
-        },
-        cast_type: Int64,
-        cast_options: CastOptions {
-            safe: false,
-            format_options: FormatOptions {
-                safe: true,
-                null: "",
-                date_format: None,
-                datetime_format: None,
-                timestamp_format: None,
-                timestamp_tz_format: None,
-                time_format: None,
-                duration_format: Pretty,
-            },
-        },
-    },
-}"#;
-        assert_eq!(format!("{:#?}", right), expected_right);
     }
 
     #[tokio::test]

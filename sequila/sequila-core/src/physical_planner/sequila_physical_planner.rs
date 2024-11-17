@@ -1,6 +1,5 @@
-use crate::physical_planner::joins::interval_join::{
-    parse_intervals, ColInterval, IntervalJoinExec,
-};
+use crate::physical_planner::intervals::{parse, ColIntervals};
+use crate::physical_planner::joins::interval_join::IntervalJoinExec;
 use crate::session_context::{Algorithm, SequilaConfig};
 use async_trait::async_trait;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
@@ -45,7 +44,7 @@ impl PhysicalOptimizerRule for IntervalJoinPhysicalOptimizationRule {
             match plan.as_any().downcast_ref::<HashJoinExec>() {
                 Some(join_exec) => {
                     info!("HashJoinExec detected");
-                    if let Some(intervals) = join_exec.filter().and_then(parse_intervals) {
+                    if let Some(intervals) = parse(join_exec.filter()) {
                         info!("Detected HashJoinExec with Range filters. Optimizing into IntervalJoinExec using {} algorithm...", algorithm);
                         let new_plan = from_hash_join(
                             join_exec,
@@ -65,7 +64,7 @@ impl PhysicalOptimizerRule for IntervalJoinPhysicalOptimizationRule {
                     match plan.as_any().downcast_ref::<NestedLoopJoinExec>() {
                         Some(join_exec) => {
                             info!("NestedLoopJoinExec detected");
-                            if let Some(intervals) = join_exec.filter().and_then(parse_intervals) {
+                            if let Some(intervals) = parse(join_exec.filter()) {
                                 info!("Detected NestedLoopJoinExec with Range filters. Optimizing into IntervalJoinExec using {} algorithm...", algorithm);
                                 let new_plan = from_nested_loop_join(
                                     join_exec,
@@ -99,7 +98,7 @@ impl PhysicalOptimizerRule for IntervalJoinPhysicalOptimizationRule {
 
 fn from_hash_join(
     join_exec: &HashJoinExec,
-    intervals: (ColInterval, ColInterval),
+    intervals: ColIntervals,
     algorithm: Algorithm,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let new_plan = IntervalJoinExec::try_new(
@@ -119,7 +118,7 @@ fn from_hash_join(
 
 fn from_nested_loop_join(
     join_exec: &NestedLoopJoinExec,
-    intervals: (ColInterval, ColInterval),
+    intervals: ColIntervals,
     algorithm: Algorithm,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let new_plan = IntervalJoinExec::try_new(

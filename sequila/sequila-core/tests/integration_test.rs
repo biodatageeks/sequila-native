@@ -15,7 +15,8 @@ const TARGETS_PATH: &str = "../../testing/data/interval/targets.csv";
 fn ctx() -> SessionContext {
     let config = SessionConfig::from(ConfigOptions::new())
         .with_option_extension(SequilaConfig::default())
-        .with_information_schema(true);
+        .with_information_schema(true)
+        .with_repartition_joins(false);
 
     SessionContext::new_with_sequila(config)
 }
@@ -104,8 +105,8 @@ async fn test_equi_and_range_condition(
         .await?;
     let formatted: String = pretty_format_batches(&plan)?.to_string();
     let expected_plan = match algorithm {
-        None => "HashJoinExec: mode=Partitioned, join_type=Inner, on=[(contig@0, contig@0)], filter=pos_start@0 <= pos_end@3 AND pos_end@1 >= pos_start@2".to_string(),
-        Some(alg) => format!("IntervalJoinExec: mode=Partitioned, join_type=Inner, on=[(contig@0, contig@0)], filter=pos_start@0 <= pos_end@3 AND pos_end@1 >= pos_start@2, alg={}", alg),
+        None => "HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(contig@0, contig@0)], filter=pos_start@0 <= pos_end@3 AND pos_end@1 >= pos_start@2".to_string(),
+        Some(alg) => format!("IntervalJoinExec: mode=CollectLeft, join_type=Inner, on=[(contig@0, contig@0)], filter=pos_start@0 <= pos_end@3 AND pos_end@1 >= pos_start@2, alg={}", alg),
     };
     assert_contains!(formatted, expected_plan);
 
@@ -204,6 +205,144 @@ async fn test_range_condition(
 
     let result: Vec<RecordBatch> = ctx.sql(query).await?.collect().await?;
     assert_batches_sorted_eq!(expected_range, &result);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[rstest::rstest]
+async fn test_all_gteq_lteq_conditions(ctx: SessionContext) -> Result<()> {
+    let a = r#"
+        CREATE TABLE a (contig TEXT, start INTEGER, end INTEGER) AS VALUES
+        ('a', 5, 10)
+    "#;
+
+    let b = r#"
+        CREATE TABLE b (contig TEXT, start INTEGER, end INTEGER) AS VALUES
+        ('a', 11, 15),
+        ('a', 10, 15),
+        ('a', 10, 10),
+        ('a',  9, 15),
+        ('a',  5, 15),
+        ('a',  4, 15),
+        ('a',  4, 10),
+        ('a',  6, 8),
+        ('a',  4, 8),
+        ('a',  4, 5),
+        ('a',  5, 5),
+        ('a',  4, 4)
+    "#;
+
+    let q0 = r#"
+        SELECT * FROM a JOIN b
+        ON a.contig = b.contig AND a.start <= b.end AND a.end >= b.start
+    "#;
+
+    let q1 = r#"
+        SELECT a.*, b.* FROM b JOIN a
+        ON a.contig = b.contig AND a.start <= b.end AND a.end >= b.start
+    "#;
+
+    let q2 = r#"
+        SELECT a.*, b.* FROM a, b
+        WHERE a.contig = b.contig AND a.start <= b.end AND a.end >= b.start
+    "#;
+
+    let q3 = r#"
+        SELECT a.*, b.* FROM b, a
+        WHERE a.contig = b.contig AND b.start <= a.end AND b.end >= a.start
+    "#;
+
+    ctx.sql(a).await?;
+    ctx.sql(b).await?;
+
+    let expected = vec![
+        "+--------+-------+-----+--------+-------+-----+",
+        "| contig | start | end | contig | start | end |",
+        "+--------+-------+-----+--------+-------+-----+",
+        "| a      | 5     | 10  | a      | 10    | 15  |",
+        "| a      | 5     | 10  | a      | 10    | 10  |",
+        "| a      | 5     | 10  | a      | 9     | 15  |",
+        "| a      | 5     | 10  | a      | 5     | 15  |",
+        "| a      | 5     | 10  | a      | 4     | 15  |",
+        "| a      | 5     | 10  | a      | 4     | 10  |",
+        "| a      | 5     | 10  | a      | 6     | 8   |",
+        "| a      | 5     | 10  | a      | 4     | 8   |",
+        "| a      | 5     | 10  | a      | 5     | 5   |",
+        "| a      | 5     | 10  | a      | 4     | 5   |",
+        "+--------+-------+-----+--------+-------+-----+",
+    ];
+
+    let results = ctx.sql(q0).await?.collect().await?;
+    assert_batches_sorted_eq!(expected, &results);
+
+    let results = ctx.sql(q1).await?.collect().await?;
+    assert_batches_sorted_eq!(expected, &results);
+
+    let results = ctx.sql(q2).await?.collect().await?;
+    assert_batches_sorted_eq!(expected, &results);
+
+    let results = ctx.sql(q3).await?.collect().await?;
+    assert_batches_sorted_eq!(expected, &results);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[rstest::rstest]
+async fn test_all_gt_lt_conditions(ctx: SessionContext) -> Result<()> {
+    let a = r#"
+        CREATE TABLE a (contig TEXT, start INTEGER, end INTEGER) AS VALUES
+        ('a', 5, 10)
+    "#;
+
+    let b = r#"
+        CREATE TABLE b (contig TEXT, start INTEGER, end INTEGER) AS VALUES
+        ('a', 11, 15),
+        ('a', 10, 15), -- a.end = b.start
+        ('a', 10, 10), -- a.end = b.start
+        ('a',  9, 15),
+        ('a',  5, 15),
+        ('a',  4, 15),
+        ('a',  4, 10),
+        ('a',  6, 8),
+        ('a',  4, 8),
+        ('a',  4, 5), -- a.start = b.end
+        ('a',  5, 5), -- a.start = b.end
+        ('a',  4, 4)
+    "#;
+
+    let q0 = r#"
+        SELECT * FROM a JOIN b
+        ON a.contig = b.contig AND a.start < b.end AND a.end > b.start
+    "#;
+
+    let q1 = r#"
+        SELECT a.*, b.* FROM b JOIN a
+        ON a.contig = b.contig AND a.end > b.start AND a.start < b.end
+    "#;
+
+    ctx.sql(a).await?;
+    ctx.sql(b).await?;
+
+    let expected = vec![
+        "+--------+-------+-----+--------+-------+-----+",
+        "| contig | start | end | contig | start | end |",
+        "+--------+-------+-----+--------+-------+-----+",
+        "| a      | 5     | 10  | a      | 9     | 15  |",
+        "| a      | 5     | 10  | a      | 5     | 15  |",
+        "| a      | 5     | 10  | a      | 4     | 15  |",
+        "| a      | 5     | 10  | a      | 4     | 10  |",
+        "| a      | 5     | 10  | a      | 6     | 8   |",
+        "| a      | 5     | 10  | a      | 4     | 8   |",
+        "+--------+-------+-----+--------+-------+-----+",
+    ];
+
+    let results = ctx.sql(q0).await?.collect().await?;
+    assert_batches_sorted_eq!(expected, &results);
+
+    let results = ctx.sql(q1).await?.collect().await?;
+    assert_batches_sorted_eq!(expected, &results);
 
     Ok(())
 }

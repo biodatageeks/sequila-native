@@ -103,7 +103,7 @@ async fn test_interval_rule_eq() -> datafusion::error::Result<()> {
 
     let plan = df.explain(false, false)?.collect().await?;
     let formatted = datafusion::arrow::util::pretty::pretty_format_batches(&plan)?.to_string();
-    assert!(!formatted.contains("IntervalJoinExec: "));
+    assert!(formatted.contains("IntervalJoinExec: "));
 
     Ok(())
 }

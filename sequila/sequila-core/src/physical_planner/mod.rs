@@ -1,3 +1,4 @@
+mod intervals;
 pub mod joins;
 mod sequila_physical_planner;
 mod sequila_query_planner;
