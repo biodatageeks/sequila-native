@@ -234,6 +234,14 @@ pub fn databio_benchmark(c: &mut Criterion) {
             s1: tables[0].clone(),
             s2: tables[7].clone(),
         },
+        TestCase {
+            s1: tables[0].clone(),
+            s2: tables[8].clone(),
+        },
+        TestCase {
+            s1: tables[7].clone(),
+            s2: tables[8].clone(),
+        },
     ];
     let algorithms = [
         Some(Algorithm::Coitrees),
