@@ -277,5 +277,96 @@
         renderAllChars(init()); // Start
       })();
     </script>
+    <canvas id="benchmarkChart" width="800" height="400"></canvas>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@2.9.2/dist/Chart.min.js"></script>
+    <script src="data.js"></script>
+    <script id="relative-script">
+      const groupBy = (array, key) => {
+        return array.reduce((result, currentValue) => {
+          // Get the group key
+          const groupKey = currentValue[key];
+
+          // Initialize the group if it doesn't exist
+          if (!result[groupKey]) {
+            result[groupKey] = [];
+          }
+
+          // Push the current value to the group
+          result[groupKey].push(currentValue);
+
+          return result;
+        }, {});
+      };
+      // Data from the JSON
+      const benchesSize = window.BENCHMARK_DATA["entries"]["Run SeQuiLa-native benchmark"].length
+      const data = window.BENCHMARK_DATA["entries"]["Run SeQuiLa-native benchmark"][benchesSize-1]["benches"]
+
+
+      // Convert nanoseconds to milliseconds
+      const labels = data.map(item => item.name);
+      const valuesInMs = data.map(item => (item.value / 1e6).toFixed(2));
+
+      //mark baseline in a different color
+      const conditionRegExp = /baseline/i;
+
+      // Create an array of colors based on the condition
+      const colors = labels.map(label =>
+              conditionRegExp.test(label) ? 'blue' : 'red'
+      );
+      const legendColors = [
+        { color: 'blue', label: 'Baseline (without DataFusion), just overlap' },
+        { color: 'red', label: 'SeQuiLa-native' },
+      ];
+      // Create the chart
+      const ctx = document.getElementById('benchmarkChart').getContext('2d');
+      const benchmarkChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Baseline algorithms time [ms]',
+            data: valuesInMs,
+            backgroundColor: colors,
+            borderColor: 'rgba(54, 162, 235, 1)',
+            borderWidth: 1
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            legend: {
+
+            },
+            tooltip: {
+              callbacks: {
+                label: function (context) {
+                  return `${context.raw} ms`;
+                }
+              }
+            }
+          },
+          scales: {
+            x: {
+              title: {
+                display: true,
+                text: 'Benchmarks'
+              },
+              ticks: {
+                autoSkip: false,
+                maxRotation: 45,
+                minRotation: 45
+              }
+            },
+            y: {
+              beginAtZero: true,
+              title: {
+                display: true,
+                text: 'Time [ms]'
+              }
+            }
+          }
+        }
+      });
+    </script>
   </body>
 </html>
