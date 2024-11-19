@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1732038118672,
+  "lastUpdate": 1732040270195,
   "repoUrl": "https://github.com/biodatageeks/sequila-native",
   "entries": {
     "Run SeQuiLa-native benchmark": [
@@ -789,6 +789,180 @@ window.BENCHMARK_DATA = {
             "name": "AIList-Small-Medium-2-7-7-8",
             "value": 23952700027,
             "range": "± 40835659",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "marek.wiewiorka@gmail.com",
+            "name": "Marek Wiewiórka",
+            "username": "mwiewior"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "eae78728c3417d87686449b0b73cbf1a14eac5d5",
+          "message": "Benchmark GHA (#39)\n\n* Draft benchmark\r\n\r\n* Make benchmarks run on the same gha runner\r\n\r\n* Increasing measurement time\r\n\r\n* Increasing time & cleanup\r\n\r\n* Tweaking benchmark\r\n\r\n* Code cleanup\r\n\r\n* Benchmarking refactoring\r\n\r\n* 5 test queries\r\n\r\n* fix:Applying review comments.\r\n\r\n* Fixing output.txt",
+          "timestamp": "2024-11-19T18:45:39+01:00",
+          "tree_id": "28551e178597ef2ce31b20519da17bb605e4661b",
+          "url": "https://github.com/biodatageeks/sequila-native/commit/eae78728c3417d87686449b0b73cbf1a14eac5d5"
+        },
+        "date": 1732040269135,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "baseline-Coitrees-Medium-Small-6-1-0-1",
+            "value": 293144182,
+            "range": "± 1684708",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Coitrees-Medium-Small-6-1-0-1",
+            "value": 335609330,
+            "range": "± 12796236",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "IntervalTree-Medium-Small-6-1-0-1",
+            "value": 628929035,
+            "range": "± 18565579",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ArrayIntervalTree-Medium-Small-6-1-0-1",
+            "value": 518866748,
+            "range": "± 29198714",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "AIList-Medium-Small-6-1-0-1",
+            "value": 681073653,
+            "range": "± 17235453",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "baseline-Coitrees-Medium-Medium-6-6-0-3",
+            "value": 2951436767,
+            "range": "± 73119230",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Coitrees-Medium-Medium-6-6-0-3",
+            "value": 68569109932,
+            "range": "± 1769480903",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "IntervalTree-Medium-Medium-6-6-0-3",
+            "value": 77326555382,
+            "range": "± 241930929",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ArrayIntervalTree-Medium-Medium-6-6-0-3",
+            "value": 76792533459,
+            "range": "± 208324552",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "AIList-Medium-Medium-6-6-0-3",
+            "value": 74483685524,
+            "range": "± 3114388199",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "baseline-Coitrees-Medium-Small-6-2-0-7",
+            "value": 800011343,
+            "range": "± 34009379",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Coitrees-Medium-Small-6-2-0-7",
+            "value": 706538762,
+            "range": "± 7455936",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "IntervalTree-Medium-Small-6-2-0-7",
+            "value": 1328251726,
+            "range": "± 667682",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ArrayIntervalTree-Medium-Small-6-2-0-7",
+            "value": 926972259,
+            "range": "± 15382751",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "AIList-Medium-Small-6-2-0-7",
+            "value": 1388365898,
+            "range": "± 11117848",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "baseline-Coitrees-Medium-Medium-6-7-0-8",
+            "value": 8253995390,
+            "range": "± 589608395",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Coitrees-Medium-Medium-6-7-0-8",
+            "value": 16843027022,
+            "range": "± 155925521",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "IntervalTree-Medium-Medium-6-7-0-8",
+            "value": 28276448030,
+            "range": "± 962277309",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ArrayIntervalTree-Medium-Medium-6-7-0-8",
+            "value": 21680088125,
+            "range": "± 209777364",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "AIList-Medium-Medium-6-7-0-8",
+            "value": 56369891832,
+            "range": "± 1232848581",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "baseline-Coitrees-Small-Medium-2-7-7-8",
+            "value": 6491237845,
+            "range": "± 481515542",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Coitrees-Small-Medium-2-7-7-8",
+            "value": 20594529922,
+            "range": "± 123455441",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "IntervalTree-Small-Medium-2-7-7-8",
+            "value": 33846419740,
+            "range": "± 993592110",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ArrayIntervalTree-Small-Medium-2-7-7-8",
+            "value": 22350571400,
+            "range": "± 130098909",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "AIList-Small-Medium-2-7-7-8",
+            "value": 22094110817,
+            "range": "± 173056228",
             "unit": "ns/iter"
           }
         ]
