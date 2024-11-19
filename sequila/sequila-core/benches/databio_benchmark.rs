@@ -1,6 +1,6 @@
 use coitrees::{COITree, Interval, IntervalTree};
 use criterion::{criterion_group, criterion_main, Criterion};
-use datafusion::arrow::array::{Array, ArrayAccessor, AsArray};
+use datafusion::arrow::array::AsArray;
 use datafusion::arrow::datatypes::{ArrowNativeType, Int32Type};
 use datafusion::config::ConfigOptions;
 use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
@@ -30,28 +30,15 @@ struct TestCase {
     s2: Table,
 }
 
-fn get_test_name(
-    algorithm: Option<Algorithm>,
-    t1: Table,
-    t2: Table,
-    prefix: Option<&String>,
-) -> String {
-    let test_name = String::from(match prefix {
-        Some(p) => p.to_owned() + &String::from("-"),
-        _ => String::from(""),
-    }) + &algorithm.unwrap().to_string()
-        + &String::from("-")
-        + &t1.table_size.to_string()
-        + &String::from("-")
-        + &t2.table_size.to_string()
-        + &String::from("-")
-        + &t1.non_flat.to_string()
-        + &String::from("-")
-        + &t2.non_flat.to_string()
-        + &String::from("-")
-        + &t1.id.to_string()
-        + &String::from("-")
-        + &t2.id.to_string();
+fn get_test_name(algorithm: Algorithm, t1: Table, t2: Table, prefix: Option<String>) -> String {
+    let prefix = prefix
+        .map(|p| p.to_string() + "-")
+        .unwrap_or("".to_string());
+
+    let test_name = format!(
+        "{}{}-{}-{}-{}-{}-{}-{}",
+        prefix, algorithm, t1.table_size, t2.table_size, t1.non_flat, t2.non_flat, t1.id, t2.id
+    );
     test_name
 }
 
@@ -62,7 +49,7 @@ async fn prepare_coitrees(
     FnvHashMap<String, COITree<(), u32>>,
     Vec<(String, i32, i32)>,
 ) {
-    let mut row_count = 0;
+    let mut _row_count = 0;
     let mut nodes = IntervalHashMap::default();
     let ctx = SessionContext::new();
     let s1 = ctx
@@ -86,7 +73,7 @@ async fn prepare_coitrees(
                 nodes.entry(contig).or_insert(Vec::new())
             };
             node_arr.push(Interval::new(pos_start as i32, pos_end as i32, ()));
-            row_count += 1;
+            _row_count += 1;
         }
     }
     let mut trees = FnvHashMap::<String, COITree<(), u32>>::default();
@@ -110,7 +97,7 @@ async fn prepare_coitrees(
             let pos_start = pos_start.value(row_index).to_isize().unwrap();
             let pos_end = pos_end.value(row_index).to_isize().unwrap();
             query_intervals.push((contig, pos_start as i32, pos_end as i32));
-            row_count += 1;
+            _row_count += 1;
         }
     }
     (trees, query_intervals)
@@ -132,12 +119,12 @@ fn bench_coitrees(
     }
 }
 
-fn create_context(algorithm: Option<Algorithm>) -> SessionContext {
+fn create_context(algorithm: Algorithm) -> SessionContext {
     let options = ConfigOptions::new();
 
     let mut sequila_config = SequilaConfig::default();
     sequila_config.prefer_interval_join = true;
-    sequila_config.interval_join_algorithm = algorithm.unwrap_or_default();
+    sequila_config.interval_join_algorithm = algorithm;
 
     let config = SessionConfig::from(options)
         .with_option_extension(sequila_config)
@@ -244,10 +231,10 @@ pub fn databio_benchmark(c: &mut Criterion) {
         },
     ];
     let algorithms = [
-        Some(Algorithm::Coitrees),
-        Some(Algorithm::IntervalTree),
-        Some(Algorithm::ArrayIntervalTree),
-        Some(Algorithm::AIList),
+        Algorithm::Coitrees,
+        Algorithm::IntervalTree,
+        Algorithm::ArrayIntervalTree,
+        Algorithm::AIList,
     ];
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -259,13 +246,13 @@ pub fn databio_benchmark(c: &mut Criterion) {
     group.significance_level(0.1);
 
     for test in test_cases {
-        let s1_path = root_path.clone() + &test.s1.name + &String::from("/*.parquet");
-        let s2_path = root_path.clone() + &test.s2.name + &String::from("/*.parquet");
+        let s1_path = format!("{}{}{}", &root_path, &test.s1.name, "/*.parquet");
+        let s2_path = format!("{}{}{}", &root_path, &test.s2.name, "/*.parquet");
         let test_baseline = get_test_name(
-            Some(Algorithm::Coitrees),
+            Algorithm::Coitrees,
             test.s1.clone(),
             test.s2.clone(),
-            Some(&String::from("baseline")),
+            Some(String::from("baseline")),
         );
         print!("test {test_baseline} ... ");
         group.bench_function(test_baseline, |b| {
