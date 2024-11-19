@@ -23,8 +23,16 @@ coitrees = "0.4.0"
 fnv = "1.0.7"
 bio = "2.0.1"
 scailist = "0.2.0"
+rand = "0.8.5"
 
 [dev-dependencies]
 rstest = "0.22.0"
 rstest_reuse = "0.7.0"
 env_logger.workspace = true
+criterion = { version = "0.5.1",features = ["async_tokio"] }
+strum = "0.26.3"
+strum_macros = "0.26.3"
+
+[[bench]]
+name = "databio_benchmark"
+harness = false
