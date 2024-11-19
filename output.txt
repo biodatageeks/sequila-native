@@ -1,4 +1,0 @@
-test baseline-Coitrees-Medium-Small-6-1-0-1 ... bench:   118705999 ns/iter (+/- 6134563)
-test Coitrees-Medium-Small-6-1-0-1 ... bench:   136480687 ns/iter (+/- 6164822)
-test IntervalTree-Medium-Small-6-1-0-1 ... bench:   251108291 ns/iter (+/- 1825160)
-test ArrayIntervalTree-Medium-Small-6-1-0-1 ... bench:   222246677 ns/iter (+/- 742889)
