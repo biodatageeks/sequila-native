@@ -325,7 +325,7 @@ async fn test_all_gt_lt_conditions(ctx: SessionContext) -> Result<()> {
     ctx.sql(a).await?;
     ctx.sql(b).await?;
 
-    let expected = vec![
+    let expected = [
         "+--------+-------+-----+--------+-------+-----+",
         "| contig | start | end | contig | start | end |",
         "+--------+-------+-----+--------+-------+-----+",

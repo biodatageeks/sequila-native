@@ -8,15 +8,15 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct ColInterval {
-    pub start: Arc<dyn PhysicalExpr>,
-    pub end: Arc<dyn PhysicalExpr>,
+    start: Arc<dyn PhysicalExpr>,
+    end: Arc<dyn PhysicalExpr>,
 }
 
 impl ColInterval {
-    fn start(&self) -> Arc<dyn PhysicalExpr> {
+    pub fn start(&self) -> Arc<dyn PhysicalExpr> {
         self.start.clone()
     }
-    fn end(&self) -> Arc<dyn PhysicalExpr> {
+    pub fn end(&self) -> Arc<dyn PhysicalExpr> {
         self.end.clone()
     }
 }
@@ -252,7 +252,7 @@ mod tests {
 
         let filter: &JoinFilter = find_join_filter(&plan)?;
 
-        try_parse(filter).map_err(|e| DataFusionError::Internal(e))
+        try_parse(filter).map_err(DataFusionError::Internal)
     }
 
     #[tokio::test]

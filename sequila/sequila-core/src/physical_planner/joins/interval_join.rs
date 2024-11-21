@@ -12,15 +12,13 @@ use datafusion::arrow::array::{
 use datafusion::arrow::compute::concat_batches;
 use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef};
 use datafusion::common::hash_utils::create_hashes;
-use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::{
     internal_err, plan_err, project_schema, DataFusionError, JoinSide, JoinType, Result, Statistics,
 };
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
-use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::equivalence::{join_equivalence_properties, ProjectionMapping};
-use datafusion::physical_expr::expressions::{BinaryExpr, CastExpr, Column, UnKnownColumn};
+use datafusion::physical_expr::expressions::CastExpr;
 use datafusion::physical_expr::{Distribution, Partitioning, PhysicalExpr, PhysicalExprRef};
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::common::can_project;
@@ -42,7 +40,7 @@ use std::fmt::{Debug, Formatter};
 use std::mem::size_of;
 use std::sync::Arc;
 use std::task::Poll;
-use std::{fmt, usize};
+
 type Position = usize;
 
 #[derive(Debug)]
@@ -328,7 +326,7 @@ impl IntervalJoinExec {
 }
 
 impl DisplayAs for IntervalJoinExec {
-    fn fmt_as(&self, t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 let display_filter = self.filter.as_ref().map_or_else(
@@ -655,13 +653,13 @@ impl SequilaInterval {
             position,
         }
     }
-    fn to_coitrees(self) -> coitrees::Interval<Position> {
+    fn into_coitrees(self) -> coitrees::Interval<Position> {
         coitrees::Interval::new(self.start, self.end, self.position)
     }
-    fn to_rust_bio(self) -> (std::ops::Range<i32>, Position) {
+    fn into_rust_bio(self) -> (std::ops::Range<i32>, Position) {
         (self.start..self.end + 1, self.position)
     }
-    fn to_ailist(self) -> scailist::Interval<Position> {
+    fn into_ailist(self) -> scailist::Interval<Position> {
         scailist::Interval {
             start: self.start as u32,
             end: self.end as u32 + 1,
@@ -678,7 +676,7 @@ enum IntervalJoinAlgorithm {
 }
 
 impl Debug for IntervalJoinAlgorithm {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             IntervalJoinAlgorithm::Coitrees(m) => {
                 use coitrees::IntervalTree;
@@ -710,7 +708,7 @@ impl IntervalJoinAlgorithm {
                     .map(|(k, v)| {
                         let intervals = v
                             .into_iter()
-                            .map(SequilaInterval::to_coitrees)
+                            .map(SequilaInterval::into_coitrees)
                             .collect::<Vec<Interval<Position>>>();
 
                         // can hold up to u32::MAX intervals
@@ -726,7 +724,7 @@ impl IntervalJoinAlgorithm {
                     .into_iter()
                     .map(|(k, v)| {
                         let tree = rust_bio::IntervalTree::from_iter(
-                            v.into_iter().map(SequilaInterval::to_rust_bio),
+                            v.into_iter().map(SequilaInterval::into_rust_bio),
                         );
                         (k, tree)
                     })
@@ -739,7 +737,7 @@ impl IntervalJoinAlgorithm {
                     .into_iter()
                     .map(|(k, v)| {
                         let tree = rust_bio::ArrayBackedIntervalTree::<i32, Position>::from_iter(
-                            v.into_iter().map(SequilaInterval::to_rust_bio),
+                            v.into_iter().map(SequilaInterval::into_rust_bio),
                         );
                         (k, tree)
                     })
@@ -753,7 +751,7 @@ impl IntervalJoinAlgorithm {
                     .map(|(k, v)| {
                         let intervals = v
                             .into_iter()
-                            .map(SequilaInterval::to_ailist)
+                            .map(SequilaInterval::into_ailist)
                             .collect::<Vec<scailist::Interval<Position>>>();
 
                         (k, scailist::ScAIList::new(intervals, None))
@@ -846,8 +844,8 @@ fn update_hashmap(
         .map(|(i, val)| (i + offset, val))
         .collect::<Vec<_>>();
 
-    let start = evaluate_as_i32(left_interval.start.clone(), batch)?;
-    let end = evaluate_as_i32(left_interval.end.clone(), batch)?;
+    let start = evaluate_as_i32(left_interval.start(), batch)?;
+    let end = evaluate_as_i32(left_interval.end(), batch)?;
 
     hash_values_iter
         .into_iter()
@@ -1022,8 +1020,8 @@ impl IntervalJoinStream {
 
         let timer = self.join_metrics.join_time.timer();
 
-        let start = evaluate_as_i32(self.right_interval.start.clone(), &state.batch)?;
-        let end = evaluate_as_i32(self.right_interval.end.clone(), &state.batch)?;
+        let start = evaluate_as_i32(self.right_interval.start(), &state.batch)?;
+        let end = evaluate_as_i32(self.right_interval.end(), &state.batch)?;
 
         let mut left_builder = UInt32BufferBuilder::new(0);
         let mut right_builder = UInt32BufferBuilder::new(0);

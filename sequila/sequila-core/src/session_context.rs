@@ -3,8 +3,8 @@ use crate::physical_planner::SeQuiLaQueryPlanner;
 use async_trait::async_trait;
 use datafusion::common::extensions_options;
 use datafusion::config::ConfigExtension;
-use datafusion::execution::context::SessionState;
 use datafusion::execution::runtime_env::RuntimeEnv;
+use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use log::info;
 use std::str::FromStr;
@@ -26,14 +26,18 @@ impl SeQuiLaSessionExt for SessionContext {
     }
 
     fn with_config_rt_sequila(config: SessionConfig, runtime: Arc<RuntimeEnv>) -> SessionContext {
-        let state = SessionState::new_with_config_rt(config, runtime);
-        let ctx = SessionContext::new_with_state(
-            state
-                .with_query_planner(Arc::new(SeQuiLaQueryPlanner))
-                .add_physical_optimizer_rule(Arc::new(IntervalJoinPhysicalOptimizationRule)),
-        );
+        let ctx: SessionContext = SessionStateBuilder::new()
+            .with_config(config)
+            .with_runtime_env(runtime)
+            .with_default_features()
+            .with_query_planner(Arc::new(SeQuiLaQueryPlanner))
+            .with_physical_optimizer_rule(Arc::new(IntervalJoinPhysicalOptimizationRule))
+            .build()
+            .into();
+
         let hammer = emojis::get_by_shortcode("hammer_and_wrench").unwrap();
         info!("Initialized SeQuiLaQueryPlanner {hammer}...");
+
         ctx
     }
 }

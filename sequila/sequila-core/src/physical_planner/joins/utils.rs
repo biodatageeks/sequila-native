@@ -183,12 +183,12 @@ fn estimate_join_cardinality(
 
             let ij_cardinality = estimate_inner_join_cardinality(
                 Statistics {
-                    num_rows: left_stats.num_rows.clone(),
+                    num_rows: left_stats.num_rows,
                     total_byte_size: Precision::Absent,
                     column_statistics: left_col_stats,
                 },
                 Statistics {
-                    num_rows: right_stats.num_rows.clone(),
+                    num_rows: right_stats.num_rows,
                     total_byte_size: Precision::Absent,
                     column_statistics: right_col_stats,
                 },
@@ -306,7 +306,7 @@ fn estimate_inner_join_cardinality(
 /// estimates the maximum distinct count from those.
 fn max_distinct_count(num_rows: &Precision<usize>, stats: &ColumnStatistics) -> Precision<usize> {
     match &stats.distinct_count {
-        dc @ (Precision::Exact(_) | Precision::Inexact(_)) => dc.clone(),
+        dc @ (Precision::Exact(_) | Precision::Inexact(_)) => *dc,
         _ => {
             // The number can never be greater than the number of rows we have
             // minus the nulls (since they don't count as distinct values).
@@ -390,6 +390,7 @@ impl<T: 'static> OnceFut<T> {
     }
 
     /// Get the result of the computation if it is ready, without consuming it
+    #[allow(dead_code)]
     pub(crate) fn get(&mut self, cx: &mut Context<'_>) -> Poll<Result<&T>> {
         if let OnceFutState::Pending(fut) = &mut self.state {
             let r = ready!(fut.poll_unpin(cx));
