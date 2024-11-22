@@ -8,7 +8,7 @@ use bio::data_structures::interval_tree as rust_bio;
 use datafusion::arrow::array::{
     Array, AsArray, PrimitiveArray, RecordBatch, UInt32Array, UInt32BufferBuilder,
 };
-use datafusion::arrow::compute::concat_batches;
+use datafusion::arrow::compute;
 use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef};
 use datafusion::common::hash_utils::create_hashes;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
@@ -334,6 +334,24 @@ impl DisplayAs for IntervalJoinExec {
                     || "".to_string(),
                     |f| format!(", filter={}", f.expression()),
                 );
+                let display_projections = if self.contain_projection() {
+                    format!(
+                        ", projection=[{}]",
+                        self.projection
+                            .as_ref()
+                            .unwrap()
+                            .iter()
+                            .map(|index| format!(
+                                "{}@{}",
+                                self.join_schema.fields().get(*index).unwrap().name(),
+                                index
+                            ))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                } else {
+                    "".to_string()
+                };
                 let on = self
                     .on
                     .iter()
@@ -342,8 +360,13 @@ impl DisplayAs for IntervalJoinExec {
                     .join(", ");
                 write!(
                     f,
-                    "IntervalJoinExec: mode={:?}, join_type={:?}, on=[{}]{}, alg={}",
-                    self.mode, self.join_type, on, display_filter, self.algorithm
+                    "IntervalJoinExec: mode={:?}, join_type={:?}, on=[{}]{}{}, alg={}",
+                    self.mode,
+                    self.join_type,
+                    on,
+                    display_filter,
+                    display_projections,
+                    self.algorithm
                 )
             }
         }
@@ -493,6 +516,15 @@ impl ExecutionPlan for IntervalJoinExec {
         // over the right that uses this information to issue new batches.
         let right_stream = self.right.execute(partition, context.clone())?;
 
+        // update column indices to reflect the projection
+        let column_indices_after_projection = match &self.projection {
+            Some(projection) => projection
+                .iter()
+                .map(|i| self.column_indices[*i].clone())
+                .collect(),
+            None => self.column_indices.clone(),
+        };
+
         Ok(Box::pin(IntervalJoinStream {
             schema: self.schema(),
             on_left,
@@ -501,7 +533,7 @@ impl ExecutionPlan for IntervalJoinExec {
             join_type: self.join_type,
             left_fut,
             right: right_stream,
-            column_indices: self.column_indices.clone(),
+            column_indices: column_indices_after_projection,
             random_state: self.random_state.clone(),
             join_metrics,
             null_equals_null: self.null_equals_null,
@@ -521,24 +553,15 @@ impl ExecutionPlan for IntervalJoinExec {
         // TODO stats: it is not possible in general to know the output size of joins
         // There are some special cases though, for example:
         // - `A LEFT JOIN B ON A.col=B.col` with `COUNT_DISTINCT(B.col)=COUNT(B.col)`
-        let mut stats = estimate_join_statistics(
-            self.left.clone(),
-            self.right.clone(),
+        let stats = estimate_join_statistics(
+            Arc::clone(&self.left),
+            Arc::clone(&self.right),
             self.on.clone(),
             &self.join_type,
             &self.join_schema,
         )?;
         // Project statistics if there is a projection
-        if let Some(projection) = &self.projection {
-            stats.column_statistics = stats
-                .column_statistics
-                .into_iter()
-                .enumerate()
-                .filter(|(i, _)| projection.contains(i))
-                .map(|(_, s)| s)
-                .collect();
-        }
-        Ok(stats)
+        Ok(stats.project(self.projection.as_ref()))
     }
 }
 
@@ -631,7 +654,7 @@ async fn collect_left_input(
 
     let hashmap = IntervalJoinAlgorithm::new(&algorithm, hashmap);
 
-    let single_batch = concat_batches(&schema, &batches)?;
+    let single_batch = compute::concat_batches(&schema, &batches)?;
     let data = JoinLeftData::new(hashmap, single_batch, reservation);
 
     Ok(data)
@@ -1038,14 +1061,17 @@ impl IntervalJoinStream {
 
         let mut columns: Vec<Arc<dyn Array>> = Vec::with_capacity(self.schema.fields().len());
 
-        for c in build_side.batch.columns() {
-            let taken = datafusion::arrow::compute::take(c, &left_indexes, None)?;
-            columns.push(taken);
-        }
-
-        for c in state.batch.columns() {
-            let taken = datafusion::arrow::compute::take(c, &right_indexes, None)?;
-            columns.push(taken);
+        for column_index in &self.column_indices {
+            let array: Arc<dyn Array> = if column_index.side == JoinSide::Left {
+                let array = build_side.batch.column(column_index.index);
+                compute::take(array, &left_indexes, None)?
+            } else if column_index.side == JoinSide::Right {
+                let array = state.batch.column(column_index.index);
+                compute::take(array, &right_indexes, None)?
+            } else {
+                panic!("Unsupported join_side {:?}", column_index.side);
+            };
+            columns.push(array);
         }
 
         let result = RecordBatch::try_new(self.schema.clone(), columns)?;
@@ -1315,6 +1341,37 @@ mod tests {
             ];
 
             assert_batches_sorted_eq!(expected, &res.clone().collect().await?);
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_projection() -> Result<()> {
+        let ctx = create_context(Some(Algorithm::Coitrees));
+        ctx.sql("CREATE TABLE a (contig TEXT, start INT, end INT) AS VALUES ('a', 1, 2)")
+            .await?;
+        ctx.sql("CREATE TABLE b (contig TEXT, start INT, end INT) AS VALUES ('a', 1, 2)")
+            .await?;
+
+        let q0 = r#"
+            SELECT * FROM a, b
+            WHERE a.contig = b.contig AND a.start <= b.end AND a.end >= b.start"#;
+
+        let q1 = r#"
+            SELECT a.* FROM a, b
+            WHERE a.contig = b.contig AND a.start <= b.end AND a.end >= b.start"#;
+
+        let q2 = r#"
+            SELECT b.* FROM a, b
+            WHERE a.contig = b.contig AND a.start <= b.end AND a.end >= b.start"#;
+
+        let q3 = r#"
+            SELECT b.start, a.end, b.end FROM a, b
+            WHERE a.contig = b.contig AND a.start <= b.end AND a.end >= b.start"#;
+
+        for q in [q0, q1, q2, q3] {
+            ctx.sql(q).await?;
         }
 
         Ok(())
