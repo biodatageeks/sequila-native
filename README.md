@@ -25,3 +25,14 @@ echo -1 | sudo tee /proc/sys/kernel/perf_event_paranoid
 cargo build --release
 flamegraph -- target/release/sequila-cli -f queries/q1-coitrees.sql
 ```
+
+## Recommended parameters
+```sql
+SET sequila.prefer_interval_join TO true;
+SET sequila.interval_join_algorithm TO coitrees;
+SET datafusion.optimizer.repartition_joins TO false;
+SET datafusion.execution.coalesce_batches TO false;
+
+-- for controlling parallism level (only for bechmarking purposes otherwise use defaults)
+SET datafusion.execution.target_partitions=1;    
+```
