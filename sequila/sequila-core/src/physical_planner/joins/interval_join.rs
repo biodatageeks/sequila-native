@@ -6,11 +6,9 @@ use crate::physical_planner::joins::utils::{
 use crate::session_context::Algorithm;
 use ahash::RandomState;
 use bio::data_structures::interval_tree as rust_bio;
-use datafusion::arrow::array::{
-    Array, AsArray, PrimitiveArray, RecordBatch, UInt32Array, UInt32BufferBuilder,
-};
+use datafusion::arrow::array::{Array, AsArray, PrimitiveArray, PrimitiveBuilder, RecordBatch};
 use datafusion::arrow::compute;
-use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef};
+use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef, UInt32Type};
 use datafusion::common::hash_utils::create_hashes;
 use datafusion::common::{
     internal_err, plan_err, project_schema, DataFusionError, JoinSide, JoinType, Result, Statistics,
@@ -1046,20 +1044,25 @@ impl IntervalJoinStream {
         let start = evaluate_as_i32(self.right_interval.start(), &state.batch)?;
         let end = evaluate_as_i32(self.right_interval.end(), &state.batch)?;
 
-        let mut left_builder = UInt32BufferBuilder::new(0);
-        let mut right_builder = UInt32BufferBuilder::new(0);
+        let mut builder_left = PrimitiveBuilder::<UInt32Type>::new();
+        let mut builder_right = PrimitiveBuilder::<UInt32Type>::new();
+        let mut pos_vect: Vec<u32> = Vec::with_capacity(100);
+        let mut i_vect: Vec<u32> = Vec::with_capacity(100);
 
         for (i, hash_val) in self.hashes_buffer.iter().enumerate() {
             build_side
                 .hash_map
                 .get(*hash_val, start.value(i), end.value(i), |pos| {
-                    left_builder.append(pos as u32);
-                    right_builder.append(i as u32);
-                })
+                    pos_vect.push(pos as u32);
+                    i_vect.push(i as u32);
+                });
+            builder_left.append_slice(&pos_vect);
+            pos_vect.clear();
+            builder_right.append_slice(&i_vect);
+            i_vect.clear()
         }
-
-        let left_indexes: UInt32Array = PrimitiveArray::new(left_builder.finish().into(), None);
-        let right_indexes: UInt32Array = PrimitiveArray::new(right_builder.finish().into(), None);
+        let left_indexes = builder_left.finish();
+        let right_indexes = builder_right.finish();
 
         let mut columns: Vec<Arc<dyn Array>> = Vec::with_capacity(self.schema.fields().len());
 
