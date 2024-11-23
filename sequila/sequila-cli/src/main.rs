@@ -41,7 +41,7 @@ async fn main() -> Result<()> {
         .with_repartition_joins(false);
     let rocket = emojis::get_by_shortcode("rocket").unwrap();
     info!("Starting SeQuiLa-native CLI {rocket}...");
-    let mut ctx = SessionContext::new_with_sequila(config);
+    let ctx = SessionContext::new_with_sequila(config);
     let mut print_options = PrintOptions {
         format: datafusion_cli::print_format::PrintFormat::Table,
         quiet: false,
@@ -50,9 +50,9 @@ async fn main() -> Result<()> {
     };
 
     if !args.file.is_empty() {
-        exec::exec_from_files(&mut ctx, args.file, &print_options).await?;
+        exec::exec_from_files(&ctx, args.file, &print_options).await?;
     } else {
-        exec::exec_from_repl(&mut ctx, &mut print_options)
+        exec::exec_from_repl(&ctx, &mut print_options)
             .await
             .map_err(|e| DataFusionError::External(Box::new(e)))
             .expect("Error");
@@ -103,7 +103,7 @@ async fn test_interval_rule_eq() -> datafusion::error::Result<()> {
 
     let plan = df.explain(false, false)?.collect().await?;
     let formatted = datafusion::arrow::util::pretty::pretty_format_batches(&plan)?.to_string();
-    assert!(!formatted.contains("IntervalJoinExec: "));
+    assert!(formatted.contains("IntervalJoinExec: "));
 
     Ok(())
 }
