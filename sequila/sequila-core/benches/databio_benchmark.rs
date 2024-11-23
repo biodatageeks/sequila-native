@@ -2,7 +2,7 @@ use coitrees::{COITree, Interval, IntervalTree};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::arrow::array::AsArray;
 use datafusion::arrow::datatypes::{ArrowNativeType, Int32Type};
-use datafusion::config::ConfigOptions;
+use datafusion::config::{ConfigField, ConfigOptions};
 use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
 use fnv::FnvHashMap;
 use sequila_core::session_context::{Algorithm, SeQuiLaSessionExt, SequilaConfig};
@@ -120,7 +120,16 @@ fn bench_coitrees(
 }
 
 fn create_context(algorithm: Algorithm) -> SessionContext {
-    let options = ConfigOptions::new();
+    let mut options = ConfigOptions::new();
+    let tuning_options = vec![
+        ("datafusion.execution.target_partitions", "1"),
+        ("datafusion.optimizer.repartition_joins", "false"),
+        ("datafusion.execution.coalesce_batches", "false"),
+    ];
+
+    for o in tuning_options {
+        options.set(o.0, o.1).expect("TODO: panic message");
+    }
 
     let mut sequila_config = SequilaConfig::default();
     sequila_config.prefer_interval_join = true;
