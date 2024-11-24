@@ -1045,24 +1045,27 @@ impl IntervalJoinStream {
         let end = evaluate_as_i32(self.right_interval.end(), &state.batch)?;
 
         let mut builder_left = PrimitiveBuilder::<UInt32Type>::new();
-        let mut builder_right = PrimitiveBuilder::<UInt32Type>::new();
-        let mut pos_vect: Vec<u32> = Vec::with_capacity(100);
-        let mut i_vect: Vec<u32> = Vec::with_capacity(100);
 
+        let mut rle_right: Vec<u32> = Vec::with_capacity(self.hashes_buffer.len());
+        let mut pos_vect: Vec<u32> = Vec::with_capacity(100);
         for (i, hash_val) in self.hashes_buffer.iter().enumerate() {
             build_side
                 .hash_map
                 .get(*hash_val, start.value(i), end.value(i), |pos| {
                     pos_vect.push(pos as u32);
-                    i_vect.push(i as u32);
                 });
+            rle_right.push(pos_vect.len() as u32);
             builder_left.append_slice(&pos_vect);
             pos_vect.clear();
-            builder_right.append_slice(&i_vect);
-            i_vect.clear()
         }
         let left_indexes = builder_left.finish();
-        let right_indexes = builder_right.finish();
+        let mut index_right = Vec::with_capacity(left_indexes.len());
+        for i in 0..rle_right.len() {
+            for _ in 0..rle_right[i] {
+                index_right.push(i as u32);
+            }
+        }
+        let right_indexes = PrimitiveArray::from(index_right);
 
         let mut columns: Vec<Arc<dyn Array>> = Vec::with_capacity(self.schema.fields().len());
 
