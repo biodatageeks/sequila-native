@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1732450494489,
+  "lastUpdate": 1732563565622,
   "repoUrl": "https://github.com/biodatageeks/sequila-native",
   "entries": {
     "Run SeQuiLa-native benchmark": [
@@ -3011,6 +3011,32 @@ window.BENCHMARK_DATA = {
             "name": "AIList-Small-Medium-2-7-7-8",
             "value": 14416925613,
             "range": "± 299644630",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "biodatageeks",
+            "username": "biodatageeks"
+          },
+          "committer": {
+            "name": "biodatageeks",
+            "username": "biodatageeks"
+          },
+          "id": "f8630438466fe112e7ae4ef00707f0295c0b4df5",
+          "message": "Benchmark guide",
+          "timestamp": "2024-11-23T09:27:40Z",
+          "url": "https://github.com/biodatageeks/sequila-native/pull/50/commits/f8630438466fe112e7ae4ef00707f0295c0b4df5"
+        },
+        "date": 1732563564511,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Coitrees-Medium-Medium-6-6-0-3",
+            "value": 97147443211,
+            "range": "± 541704208",
             "unit": "ns/iter"
           }
         ]
