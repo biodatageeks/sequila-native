@@ -20,3 +20,4 @@ sandbox/*.csv
 sandbox/*.parquet/
 .history
 bin/
+sandbox/bugfixing.md
