@@ -71,6 +71,7 @@ fn expected_equi() -> [&'static str; 20] {
 #[case::interval_join_interval_tree(Some(Algorithm::IntervalTree))]
 #[case::interval_join_array_interval_tree(Some(Algorithm::ArrayIntervalTree))]
 #[case::interval_join_ailist(Some(Algorithm::AIList))]
+#[case::interval_join_lapper(Some(Algorithm::Lapper))]
 async fn test_equi_and_range_condition(
     #[case] algorithm: Option<Algorithm>,
     ctx: SessionContext,
@@ -166,6 +167,7 @@ fn expected_range() -> [&'static str; 36] {
 #[case::interval_join_interval_tree(Some(Algorithm::IntervalTree))]
 #[case::interval_join_array_interval_tree(Some(Algorithm::ArrayIntervalTree))]
 #[case::interval_join_ailist(Some(Algorithm::AIList))]
+#[case::interval_join_lapper(Some(Algorithm::Lapper))]
 async fn test_range_condition(
     #[case] algorithm: Option<Algorithm>,
     ctx: SessionContext,
