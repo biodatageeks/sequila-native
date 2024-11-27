@@ -60,6 +60,7 @@ pub enum Algorithm {
     IntervalTree,
     ArrayIntervalTree,
     AIList,
+    Lapper,
 }
 
 #[derive(Debug)]
@@ -83,6 +84,7 @@ impl FromStr for Algorithm {
             "intervaltree" => Ok(Algorithm::IntervalTree),
             "arrayintervaltree" => Ok(Algorithm::ArrayIntervalTree),
             "ailist" => Ok(Algorithm::AIList),
+            "lapper" => Ok(Algorithm::Lapper),
             _ => Err(ParseAlgorithmError(format!(
                 "Can't parse '{}' as Algorithm",
                 s
@@ -98,6 +100,7 @@ impl std::fmt::Display for Algorithm {
             Algorithm::IntervalTree => "IntervalTree",
             Algorithm::ArrayIntervalTree => "ArrayIntervalTree",
             Algorithm::AIList => "AIList",
+            Algorithm::Lapper => "Lapper",
         };
         write!(f, "{}", val)
     }

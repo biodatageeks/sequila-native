@@ -687,6 +687,13 @@ impl SequilaInterval {
             val: self.position,
         }
     }
+    fn into_lapper(self) -> rust_lapper::Interval<u32, Position> {
+        rust_lapper::Interval {
+            start: self.start as u32,
+            stop: self.end as u32 + 1,
+            val: self.position,
+        }
+    }
 }
 
 enum IntervalJoinAlgorithm {
@@ -694,6 +701,7 @@ enum IntervalJoinAlgorithm {
     IntervalTree(FnvHashMap<u64, rust_bio::IntervalTree<i32, Position>>),
     ArrayIntervalTree(FnvHashMap<u64, rust_bio::ArrayBackedIntervalTree<i32, Position>>),
     AIList(FnvHashMap<u64, scailist::ScAIList<Position>>),
+    Lapper(FnvHashMap<u64, rust_lapper::Lapper<u32, Position>>),
 }
 
 impl Debug for IntervalJoinAlgorithm {
@@ -714,6 +722,7 @@ impl Debug for IntervalJoinAlgorithm {
                 f.debug_struct("ArrayIntervalTree").field("0", m).finish()
             }
             IntervalJoinAlgorithm::AIList(m) => f.debug_struct("AIList").field("0", m).finish(),
+            IntervalJoinAlgorithm::Lapper(m) => f.debug_struct("Lapper").field("0", m).finish(),
         }
     }
 }
@@ -781,6 +790,22 @@ impl IntervalJoinAlgorithm {
 
                 IntervalJoinAlgorithm::AIList(hashmap)
             }
+            Algorithm::Lapper => {
+                use rust_lapper::*;
+                let hashmap = hash_map
+                    .into_iter()
+                    .map(|(k, v)| {
+                        let intervals = v
+                            .into_iter()
+                            .map(SequilaInterval::into_lapper)
+                            .collect::<Vec<Interval<u32, Position>>>();
+
+                        (k, Lapper::new(intervals))
+                    })
+                    .collect::<FnvHashMap<u64, Lapper<u32, Position>>>();
+
+                IntervalJoinAlgorithm::Lapper(hashmap)
+            }
         }
     }
 
@@ -835,6 +860,13 @@ impl IntervalJoinAlgorithm {
             IntervalJoinAlgorithm::AIList(hashmap) => {
                 if let Some(list) = hashmap.get(&k) {
                     for interval in list.find(start as u32, end as u32 + 1) {
+                        f(interval.val)
+                    }
+                }
+            }
+            IntervalJoinAlgorithm::Lapper(hashmap) => {
+                if let Some(lapper) = hashmap.get(&k) {
+                    for interval in lapper.find(start as u32, end as u32 + 1) {
                         f(interval.val)
                     }
                 }
@@ -1309,6 +1341,7 @@ mod tests {
             Some(Algorithm::IntervalTree),
             Some(Algorithm::ArrayIntervalTree),
             Some(Algorithm::AIList),
+            Some(Algorithm::Lapper),
         ];
 
         let schema = &schema();
