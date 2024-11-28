@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1732747673343,
+  "lastUpdate": 1732783977495,
   "repoUrl": "https://github.com/biodatageeks/sequila-native",
   "entries": {
     "Run SeQuiLa-native benchmark": [
@@ -3951,6 +3951,176 @@ window.BENCHMARK_DATA = {
             "name": "Lapper-Small-Medium-2-7-7-8",
             "value": 22255212925,
             "range": "± 268474480",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "biodatageeks",
+            "username": "biodatageeks"
+          },
+          "committer": {
+            "name": "biodatageeks",
+            "username": "biodatageeks"
+          },
+          "id": "b6fdfeca0d8f64067c50d56f1c6fbe3c9119ee30",
+          "message": "Performance tuning",
+          "timestamp": "2024-11-27T12:46:10Z",
+          "url": "https://github.com/biodatageeks/sequila-native/pull/48/commits/b6fdfeca0d8f64067c50d56f1c6fbe3c9119ee30"
+        },
+        "date": 1732783976455,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "baseline-Coitrees-Medium-Small-6-1-0-1",
+            "value": 298353747,
+            "range": "± 5421850",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Coitrees-Medium-Small-6-1-0-1",
+            "value": 375897896,
+            "range": "± 7505588",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "IntervalTree-Medium-Small-6-1-0-1",
+            "value": 635118233,
+            "range": "± 28569732",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ArrayIntervalTree-Medium-Small-6-1-0-1",
+            "value": 568818576,
+            "range": "± 5865497",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "AIList-Medium-Small-6-1-0-1",
+            "value": 681818163,
+            "range": "± 24906208",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "baseline-Coitrees-Medium-Medium-6-6-0-3",
+            "value": 3016284834,
+            "range": "± 58449608",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Coitrees-Medium-Medium-6-6-0-3",
+            "value": 30223395356,
+            "range": "± 861540496",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "IntervalTree-Medium-Medium-6-6-0-3",
+            "value": 40576191903,
+            "range": "± 2124047102",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ArrayIntervalTree-Medium-Medium-6-6-0-3",
+            "value": 42703394790,
+            "range": "± 665160469",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "AIList-Medium-Medium-6-6-0-3",
+            "value": 37030900061,
+            "range": "± 1225364479",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "baseline-Coitrees-Medium-Small-6-2-0-7",
+            "value": 669631378,
+            "range": "± 2408083",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Coitrees-Medium-Small-6-2-0-7",
+            "value": 573871538,
+            "range": "± 18691752",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "IntervalTree-Medium-Small-6-2-0-7",
+            "value": 1115983835,
+            "range": "± 29314148",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ArrayIntervalTree-Medium-Small-6-2-0-7",
+            "value": 812490382,
+            "range": "± 16171276",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "AIList-Medium-Small-6-2-0-7",
+            "value": 1206226416,
+            "range": "± 13835724",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "baseline-Coitrees-Medium-Medium-6-7-0-8",
+            "value": 7068845555,
+            "range": "± 39665650",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Coitrees-Medium-Medium-6-7-0-8",
+            "value": 9440423197,
+            "range": "± 129724060",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "IntervalTree-Medium-Medium-6-7-0-8",
+            "value": 17770689533,
+            "range": "± 238842539",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ArrayIntervalTree-Medium-Medium-6-7-0-8",
+            "value": 14898020320,
+            "range": "± 45522386",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "AIList-Medium-Medium-6-7-0-8",
+            "value": 52314457142,
+            "range": "± 329207247",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "baseline-Coitrees-Small-Medium-2-7-7-8",
+            "value": 5635887250,
+            "range": "± 42872122",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Coitrees-Small-Medium-2-7-7-8",
+            "value": 10726154069,
+            "range": "± 119237338",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "IntervalTree-Small-Medium-2-7-7-8",
+            "value": 21012109932,
+            "range": "± 318046269",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ArrayIntervalTree-Small-Medium-2-7-7-8",
+            "value": 12692325529,
+            "range": "± 55160938",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "AIList-Small-Medium-2-7-7-8",
+            "value": 14272546612,
+            "range": "± 327053617",
             "unit": "ns/iter"
           }
         ]
