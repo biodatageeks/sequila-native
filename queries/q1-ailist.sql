@@ -1,6 +1,7 @@
 SET sequila.prefer_interval_join TO true;
 SET sequila.interval_join_algorithm TO ailist;
 SET datafusion.optimizer.repartition_joins TO false;
+SET datafusion.execution.coalesce_batches TO false;
 
 CREATE EXTERNAL TABLE a (contig VARCHAR NOT NULL, start BIGINT NOT NULL, end BIGINT NOT NULL)
 STORED AS CSV

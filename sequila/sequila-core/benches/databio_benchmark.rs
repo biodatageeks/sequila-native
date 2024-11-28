@@ -138,7 +138,6 @@ fn create_context(algorithm: Algorithm) -> SessionContext {
     let config = SessionConfig::from(options)
         .with_option_extension(sequila_config)
         .with_information_schema(true)
-        .with_batch_size(2000)
         .with_target_partitions(1);
 
     SessionContext::new_with_sequila(config)
@@ -244,6 +243,7 @@ pub fn databio_benchmark(c: &mut Criterion) {
         Algorithm::IntervalTree,
         Algorithm::ArrayIntervalTree,
         Algorithm::AIList,
+        Algorithm::Lapper,
     ];
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
