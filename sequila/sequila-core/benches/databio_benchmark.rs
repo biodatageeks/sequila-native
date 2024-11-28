@@ -138,7 +138,6 @@ fn create_context(algorithm: Algorithm) -> SessionContext {
     let config = SessionConfig::from(options)
         .with_option_extension(sequila_config)
         .with_information_schema(true)
-        .with_batch_size(8192)
         .with_target_partitions(1);
 
     SessionContext::new_with_sequila(config)
