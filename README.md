@@ -26,6 +26,17 @@ cargo build --release
 flamegraph -- target/release/sequila-cli -f queries/q1-coitrees.sql
 ```
 
+## Recommended parameters
+```sql
+SET sequila.prefer_interval_join TO true;
+SET sequila.interval_join_algorithm TO coitrees;
+SET datafusion.optimizer.repartition_joins TO false;
+SET datafusion.execution.coalesce_batches TO false;
+
+-- for controlling parallism level (only for bechmarking purposes otherwise use defaults)
+SET datafusion.execution.target_partitions=1;    
+```
+
 ## How to run benchmark locally:
 1. Download and unpack test [dataset](https://drive.google.com/file/d/1lctmude31mSAh9fWjI60K1bDrbeDPGfm/view?usp=sharing).
 2. Export env variable with path to the root folder with benchmark data, e.g.:
