@@ -6,6 +6,7 @@ use crate::physical_planner::joins::utils::{
 use crate::session_context::Algorithm;
 use ahash::RandomState;
 use bio::data_structures::interval_tree as rust_bio;
+use coitrees::{COITree, Interval};
 use datafusion::arrow::array::{Array, AsArray, PrimitiveArray, PrimitiveBuilder, RecordBatch};
 use datafusion::arrow::compute;
 use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef, UInt32Type};
@@ -702,6 +703,7 @@ enum IntervalJoinAlgorithm {
     ArrayIntervalTree(FnvHashMap<u64, rust_bio::ArrayBackedIntervalTree<i32, Position>>),
     AIList(FnvHashMap<u64, scailist::ScAIList<Position>>),
     Lapper(FnvHashMap<u64, rust_lapper::Lapper<u32, Position>>),
+    CoitresNearest(FnvHashMap<u64, (COITree<Position, u32>, Vec<Interval<Position>>)>),
 }
 
 impl Debug for IntervalJoinAlgorithm {
@@ -715,6 +717,8 @@ impl Debug for IntervalJoinAlgorithm {
                     .collect::<HashMap<_, _>>();
                 f.debug_struct("Coitrees").field("0", &q).finish()
             }
+            &IntervalJoinAlgorithm::CoitresNearest(_) => todo!(),
+
             IntervalJoinAlgorithm::IntervalTree(m) => {
                 f.debug_struct("IntervalTree").field("0", m).finish()
             }
@@ -748,6 +752,28 @@ impl IntervalJoinAlgorithm {
                     .collect::<FnvHashMap<u64, COITree<Position, u32>>>();
 
                 IntervalJoinAlgorithm::Coitrees(hashmap)
+            }
+            Algorithm::CoitreesNearest => {
+                use coitrees::{COITree, Interval, IntervalTree};
+
+                let hashmap = hash_map
+                    .into_iter()
+                    .map(|(k, v)| {
+                        let mut intervals = v
+                            .into_iter()
+                            .map(SequilaInterval::into_coitrees)
+                            .collect::<Vec<Interval<Position>>>();
+
+                        // can hold up to u32::MAX intervals
+                        let tree: COITree<Position, u32> = COITree::new(intervals.iter());
+                        intervals.sort_by(|a, b| {
+                            a.first.cmp(&b.first).then_with(|| a.last.cmp(&b.last))
+                        });
+                        (k, (tree, intervals))
+                    })
+                    .collect::<FnvHashMap<u64, (COITree<Position, u32>, Vec<Interval<Position>>)>>(
+                    );
+                IntervalJoinAlgorithm::CoitresNearest(hashmap)
             }
             Algorithm::IntervalTree => {
                 let hashmap = hash_map
@@ -829,6 +855,49 @@ impl IntervalJoinAlgorithm {
         *node.metadata
     }
 
+    fn nearest(&self, start: i32, end: i32, ranges2: &[Interval<Position>]) -> Option<Position> {
+        if ranges2.is_empty() {
+            return None;
+        }
+
+        let sorted_ranges2 = ranges2;
+
+        let mut closest_idx = None;
+        let mut min_distance = i32::MAX;
+
+        let mut left = 0;
+        let mut right = sorted_ranges2.len();
+
+        // Binary search to narrow down candidates in ranges2
+        while left < right {
+            let mid = (left + right) / 2;
+            if sorted_ranges2[mid].first < end {
+                left = mid + 1;
+            } else {
+                right = mid;
+            }
+        }
+
+        // Check ranges around the binary search result for nearest distance
+        for &i in [left.saturating_sub(1), left].iter() {
+            if let Some(r2) = sorted_ranges2.get(i) {
+                let distance = if end < r2.first {
+                    r2.first - end
+                } else if r2.last < start {
+                    start - r2.last
+                } else {
+                    0
+                };
+
+                if distance < min_distance {
+                    min_distance = distance;
+                    closest_idx = Some(r2.metadata);
+                }
+            }
+        }
+
+        closest_idx
+    }
     fn get<F>(&self, k: u64, start: i32, end: i32, mut f: F)
     where
         F: FnMut(Position),
@@ -841,6 +910,25 @@ impl IntervalJoinAlgorithm {
                         let position: Position = self.extract_position(node);
                         f(position)
                     });
+                }
+            }
+            IntervalJoinAlgorithm::CoitresNearest(hashmap) => {
+                use coitrees::IntervalTree;
+                if let Some(tree) = hashmap.get(&k) {
+                    let mut i = 0;
+                    // first look for overlaps and return an arbitrary one (see: https://web.mit.edu/~r/current/arch/i386_linux26/lib/R/library/IRanges/html/nearest-methods.html)
+                    tree.0.query(start, end, |node| {
+                        let position: Position = self.extract_position(node);
+                        if i == 0 {
+                            f(position);
+                            i += 1;
+                        }
+                    });
+                    // found no overlaps in the tree - try to look for nearest intervals
+                    if i == 0 {
+                        let position = self.nearest(start, end, &tree.1);
+                        f(position.unwrap());
+                    }
                 }
             }
             IntervalJoinAlgorithm::IntervalTree(hashmap) => {
