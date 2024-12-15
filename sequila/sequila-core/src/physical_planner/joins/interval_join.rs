@@ -37,6 +37,7 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::mem::size_of;
+use std::ptr::null;
 use std::sync::Arc;
 use std::task::Poll;
 
@@ -1174,8 +1175,23 @@ impl IntervalJoinStream {
                 .get(*hash_val, start.value(i), end.value(i), |pos| {
                     pos_vect.push(pos as u32);
                 });
-            rle_right.push(pos_vect.len() as u32);
-            builder_left.append_slice(&pos_vect);
+            match &build_side.hash_map {
+                IntervalJoinAlgorithm::CoitresNearest(_t) => {
+                    // even if there is no hit we need to preserve the right side
+                    rle_right.push(1);
+                    if pos_vect.len() == 0 {
+                        builder_left.append_null();
+                    } else {
+                        builder_left.append_slice(&pos_vect);
+                    }
+                }
+                _ => {
+                    rle_right.push(pos_vect.len() as u32);
+                    builder_left.append_slice(&pos_vect);
+                }
+            }
+
+            // builder_left.append_slice(&pos_vect);
             pos_vect.clear();
         }
         let left_indexes = builder_left.finish();

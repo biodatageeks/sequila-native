@@ -44,6 +44,7 @@ impl SeQuiLaSessionExt for SessionContext {
             Arc::new(AggregateStatistics::new()),
             //We need to have control over swapping left and right sides for nearest operation
             // as it's not symmetric.
+            //FIXME: disable only one
             // Arc::new(JoinSelection::new()),
             Arc::new(LimitedDistinctAggregation::new()),
             Arc::new(EnforceDistribution::new()),
