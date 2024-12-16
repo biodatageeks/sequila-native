@@ -837,10 +837,22 @@ impl IntervalJoinAlgorithm {
     }
 
     /// unoptimized on Linux x64 (without target-cpu=native)
-    #[cfg(all(
-        target_os = "linux",
-        target_arch = "x86_64",
-        not(target_feature = "avx")
+    #[cfg(any(
+        all(
+            target_os = "linux",
+            target_arch = "x86_64",
+            not(target_feature = "avx")
+        ),
+        all(
+            target_os = "macos",
+            target_arch = "x86_64",
+            not(target_feature = "avx")
+        ),
+        all(
+            target_os = "windows",
+            target_arch = "x86_64",
+            not(target_feature = "avx")
+        ),
     ))]
     fn extract_position(&self, node: &coitrees::IntervalNode<Position, u32>) -> Position {
         node.metadata
@@ -850,7 +862,8 @@ impl IntervalJoinAlgorithm {
     #[cfg(any(
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "macos", target_arch = "x86_64", target_feature = "avx"),
-        all(target_os = "linux", target_arch = "x86_64", target_feature = "avx")
+        all(target_os = "linux", target_arch = "x86_64", target_feature = "avx"),
+        all(target_os = "windows", target_arch = "x86_64", target_feature = "avx")
     ))]
     fn extract_position(&self, node: &coitrees::Interval<&Position>) -> Position {
         *node.metadata
