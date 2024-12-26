@@ -5,19 +5,7 @@ use datafusion::common::extensions_options;
 use datafusion::config::ConfigExtension;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::execution::SessionStateBuilder;
-use datafusion::physical_optimizer::aggregate_statistics::AggregateStatistics;
-use datafusion::physical_optimizer::coalesce_batches::CoalesceBatches;
-use datafusion::physical_optimizer::combine_partial_final_agg::CombinePartialFinalAggregate;
-use datafusion::physical_optimizer::enforce_distribution::EnforceDistribution;
-use datafusion::physical_optimizer::enforce_sorting::EnforceSorting;
-use datafusion::physical_optimizer::limit_pushdown::LimitPushdown;
-use datafusion::physical_optimizer::limited_distinct_aggregation::LimitedDistinctAggregation;
-use datafusion::physical_optimizer::output_requirements::OutputRequirements;
-use datafusion::physical_optimizer::projection_pushdown::ProjectionPushdown;
-use datafusion::physical_optimizer::sanity_checker::SanityCheckPlan;
-use datafusion::physical_optimizer::topk_aggregation::TopKAggregation;
-use datafusion::physical_optimizer::update_aggr_exprs::OptimizeAggregateOrder;
-use datafusion::physical_optimizer::PhysicalOptimizerRule;
+use datafusion::physical_optimizer::optimizer::PhysicalOptimizer;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use log::info;
 use std::str::FromStr;
@@ -39,27 +27,10 @@ impl SeQuiLaSessionExt for SessionContext {
     }
 
     fn with_config_rt_sequila(config: SessionConfig, runtime: Arc<RuntimeEnv>) -> SessionContext {
-        let rules: Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>> = vec![
-            Arc::new(OutputRequirements::new_add_mode()),
-            Arc::new(AggregateStatistics::new()),
-            //We need to have control over swapping left and right sides for nearest operation
-            // as it's not symmetric.
-            //FIXME: disable only one
-            // Arc::new(JoinSelection::new()),
-            Arc::new(LimitedDistinctAggregation::new()),
-            Arc::new(EnforceDistribution::new()),
-            Arc::new(CombinePartialFinalAggregate::new()),
-            Arc::new(EnforceSorting::new()),
-            Arc::new(OptimizeAggregateOrder::new()),
-            Arc::new(ProjectionPushdown::new()),
-            Arc::new(CoalesceBatches::new()),
-            Arc::new(OutputRequirements::new_remove_mode()),
-            Arc::new(TopKAggregation::new()),
-            Arc::new(ProjectionPushdown::new()),
-            Arc::new(LimitPushdown::new()),
-            Arc::new(SanityCheckPlan::new()),
-            Arc::new(IntervalJoinPhysicalOptimizationRule),
-        ];
+        let mut rules = PhysicalOptimizer::new().rules;
+        rules.retain(|rule| rule.name() != "join_selection");
+        rules.push(Arc::new(IntervalJoinPhysicalOptimizationRule));
+
         let ctx: SessionContext = SessionStateBuilder::new()
             .with_config(config)
             .with_runtime_env(runtime)
