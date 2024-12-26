@@ -361,7 +361,8 @@ async fn test_nearest(ctx: SessionContext) -> Result<()> {
         CREATE TABLE b (contig TEXT, strand TEXT, start INTEGER, end INTEGER) AS VALUES
         ('a', 's', 11, 13),
         ('a', 's', 20, 21),
-        ('a', 'x', 0, 1)
+        ('a', 'x', 0, 1),
+        ('b', 's', 1, 2)
     "#;
 
     ctx.sql("SET sequila.interval_join_algorithm TO CoitreesNearest")
@@ -385,9 +386,10 @@ async fn test_nearest(ctx: SessionContext) -> Result<()> {
         "+--------+--------+-------+-----+--------+--------+-------+-----+",
         "| contig | strand | start | end | contig | strand | start | end |",
         "+--------+--------+-------+-----+--------+--------+-------+-----+",
+        "|        |        |       |     | a      | x      | 0     | 1   |",
+        "|        |        |       |     | b      | s      | 1     | 2   |",
         "| a      | s      | 5     | 10  | a      | s      | 11    | 13  |",
         "| a      | s      | 5     | 10  | a      | s      | 20    | 21  |",
-        "|        |        |       |     | a      | x      | 0     | 1   |",
         "+--------+--------+-------+-----+--------+--------+-------+-----+",
     ];
 
