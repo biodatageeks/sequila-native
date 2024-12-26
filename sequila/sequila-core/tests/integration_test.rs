@@ -348,3 +348,50 @@ async fn test_all_gt_lt_conditions(ctx: SessionContext) -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[rstest::rstest]
+async fn test_nearest(ctx: SessionContext) -> Result<()> {
+    let a = r#"
+        CREATE TABLE a (contig TEXT, strand TEXT, start INTEGER, end INTEGER) AS VALUES
+        ('a', 's', 5, 10)
+    "#;
+
+    let b = r#"
+        CREATE TABLE b (contig TEXT, strand TEXT, start INTEGER, end INTEGER) AS VALUES
+        ('a', 's', 11, 13),
+        ('a', 's', 20, 21),
+        ('a', 'x', 0, 1)
+    "#;
+
+    ctx.sql("SET sequila.interval_join_algorithm TO CoitreesNearest")
+        .await?;
+
+    ctx.sql(a).await?;
+    ctx.sql(b).await?;
+
+    let q = r#"
+        SELECT * FROM a JOIN b
+        ON a.contig = b.contig AND a.strand = b.strand
+            AND a.start < b.end AND a.end > b.start
+    "#;
+
+    let result = ctx.sql(q).await?;
+    result.clone().show().await?;
+
+    let results = result.collect().await?;
+
+    let expected = [
+        "+--------+--------+-------+-----+--------+--------+-------+-----+",
+        "| contig | strand | start | end | contig | strand | start | end |",
+        "+--------+--------+-------+-----+--------+--------+-------+-----+",
+        "| a      | s      | 5     | 10  | a      | s      | 11    | 13  |",
+        "| a      | s      | 5     | 10  | a      | s      | 20    | 21  |",
+        "|        |        |       |     | a      | x      | 0     | 1   |",
+        "+--------+--------+-------+-----+--------+--------+-------+-----+",
+    ];
+
+    assert_batches_sorted_eq!(expected, &results);
+
+    Ok(())
+}

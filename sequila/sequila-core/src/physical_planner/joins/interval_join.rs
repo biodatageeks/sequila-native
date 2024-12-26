@@ -37,7 +37,6 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::mem::size_of;
-use std::ptr::null;
 use std::sync::Arc;
 use std::task::Poll;
 
