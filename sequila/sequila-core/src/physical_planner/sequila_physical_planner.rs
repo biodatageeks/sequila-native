@@ -8,9 +8,10 @@ use datafusion::config::ConfigOptions;
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::{Expr, LogicalPlan};
 use datafusion::physical_expr::expressions::lit;
-use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::{LexOrdering, PhysicalExpr, PhysicalSortExpr};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::joins::{HashJoinExec, NestedLoopJoinExec, PartitionMode};
+use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 use log::info;
@@ -101,9 +102,29 @@ fn from_hash_join(
     intervals: ColIntervals,
     algorithm: Algorithm,
 ) -> Result<Arc<dyn ExecutionPlan>> {
+    let right = if matches!(algorithm, Algorithm::SortedCoitrees) {
+        let mut expressions: Vec<Arc<dyn PhysicalExpr>> =
+            join_exec.on().iter().map(|x| x.1.clone()).collect();
+
+        expressions.push(intervals.right_interval.start());
+        expressions.push(intervals.right_interval.end());
+
+        let expressions = expressions
+            .into_iter()
+            .map(|expr| PhysicalSortExpr::new_default(expr))
+            .collect();
+
+        let sorted = SortExec::new(LexOrdering::new(expressions), join_exec.right().clone())
+            .with_preserve_partitioning(true);
+
+        Arc::new(sorted)
+    } else {
+        join_exec.right().clone()
+    };
+
     let new_plan = IntervalJoinExec::try_new(
         join_exec.left().clone(),
-        join_exec.right().clone(),
+        right,
         join_exec.on.clone(),
         join_exec.filter.clone(),
         intervals,

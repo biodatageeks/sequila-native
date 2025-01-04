@@ -1,5 +1,5 @@
 SET sequila.prefer_interval_join TO true;
-SET sequila.interval_join_algorithm TO coitrees;
+SET sequila.interval_join_algorithm TO sortedcoitrees;
 SET datafusion.optimizer.repartition_joins TO false;
 SET datafusion.execution.coalesce_batches TO false;
 

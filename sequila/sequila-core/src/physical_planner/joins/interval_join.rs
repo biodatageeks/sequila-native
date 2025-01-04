@@ -6,9 +6,9 @@ use crate::physical_planner::joins::utils::{
 use crate::session_context::Algorithm;
 use ahash::RandomState;
 use bio::data_structures::interval_tree as rust_bio;
-use datafusion::arrow::array::{Array, AsArray, PrimitiveArray, PrimitiveBuilder, RecordBatch};
+use datafusion::arrow::array::{Array, AsArray, PrimitiveArray, RecordBatch, UInt32Array};
 use datafusion::arrow::compute;
-use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef, UInt32Type};
+use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef};
 use datafusion::common::hash_utils::create_hashes;
 use datafusion::common::{
     internal_err, plan_err, project_schema, DataFusionError, JoinSide, JoinType, Result, Statistics,
@@ -697,7 +697,10 @@ impl SequilaInterval {
 }
 
 enum IntervalJoinAlgorithm {
-    Coitrees(FnvHashMap<u64, coitrees::COITree<Position, u32>>),
+    Coitrees {
+        hashmap: FnvHashMap<u64, coitrees::COITree<Position, u32>>,
+        use_sorted: bool,
+    },
     IntervalTree(FnvHashMap<u64, rust_bio::IntervalTree<i32, Position>>),
     ArrayIntervalTree(FnvHashMap<u64, rust_bio::ArrayBackedIntervalTree<i32, Position>>),
     AIList(FnvHashMap<u64, scailist::ScAIList<Position>>),
@@ -707,9 +710,9 @@ enum IntervalJoinAlgorithm {
 impl Debug for IntervalJoinAlgorithm {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            IntervalJoinAlgorithm::Coitrees(m) => {
+            IntervalJoinAlgorithm::Coitrees { hashmap, .. } => {
                 use coitrees::IntervalTree;
-                let q = m
+                let q = hashmap
                     .iter()
                     .map(|(key, val)| (*key, val.iter().collect::<Vec<_>>()))
                     .collect::<HashMap<_, _>>();
@@ -730,7 +733,7 @@ impl Debug for IntervalJoinAlgorithm {
 impl IntervalJoinAlgorithm {
     fn new(alg: &Algorithm, hash_map: HashMap<u64, Vec<SequilaInterval>>) -> IntervalJoinAlgorithm {
         match alg {
-            Algorithm::Coitrees => {
+            Algorithm::Coitrees | Algorithm::SortedCoitrees => {
                 use coitrees::{COITree, Interval, IntervalTree};
 
                 let hashmap = hash_map
@@ -747,7 +750,12 @@ impl IntervalJoinAlgorithm {
                     })
                     .collect::<FnvHashMap<u64, COITree<Position, u32>>>();
 
-                IntervalJoinAlgorithm::Coitrees(hashmap)
+                let use_sorted = matches!(alg, Algorithm::SortedCoitrees);
+
+                IntervalJoinAlgorithm::Coitrees {
+                    hashmap,
+                    use_sorted,
+                }
             }
             Algorithm::IntervalTree => {
                 let hashmap = hash_map
@@ -829,12 +837,48 @@ impl IntervalJoinAlgorithm {
         *node.metadata
     }
 
+    fn process<F>(
+        &self,
+        buffer: &Vec<u64>,
+        start: &PrimitiveArray<datafusion::arrow::datatypes::Int32Type>,
+        end: &PrimitiveArray<datafusion::arrow::datatypes::Int32Type>,
+        mut f: F,
+    ) where
+        F: FnMut((Position, usize)) -> (),
+    {
+        match self {
+            IntervalJoinAlgorithm::Coitrees { hashmap, .. } => {
+                use coitrees::*;
+
+                let mut sorted: FnvHashMap<&u64, COITreeSortedQuerent<'_, Position, u32>> =
+                    FnvHashMap::default();
+
+                for (i, hash_val) in buffer.iter().enumerate() {
+                    if let Some(tree) = sorted.get_mut(hash_val) {
+                        tree.query(start.value(i), end.value(i), |node| {
+                            let position: Position = self.extract_position(node);
+                            f((position, i))
+                        })
+                    } else if let Some(tree) = hashmap.get(hash_val) {
+                        let mut sorted_tree = COITreeSortedQuerent::new(tree);
+                        sorted_tree.query(start.value(i), end.value(i), |node| {
+                            let position: Position = self.extract_position(node);
+                            f((position, i))
+                        });
+                        sorted.insert(hash_val, sorted_tree);
+                    }
+                }
+            }
+            _ => panic!("not implemented"),
+        }
+    }
+
     fn get<F>(&self, k: u64, start: i32, end: i32, mut f: F)
     where
         F: FnMut(Position),
     {
         match self {
-            IntervalJoinAlgorithm::Coitrees(hashmap) => {
+            IntervalJoinAlgorithm::Coitrees { hashmap, .. } => {
                 use coitrees::IntervalTree;
                 if let Some(tree) = hashmap.get(&k) {
                     tree.query(start, end, |node| {
@@ -1076,28 +1120,38 @@ impl IntervalJoinStream {
         let start = evaluate_as_i32(self.right_interval.start(), &state.batch)?;
         let end = evaluate_as_i32(self.right_interval.end(), &state.batch)?;
 
-        let mut builder_left = PrimitiveBuilder::<UInt32Type>::new();
+        let mut left_indexes: Vec<u32> = Vec::with_capacity(self.hashes_buffer.len());
+        let mut right_indexes: Vec<u32> = Vec::with_capacity(self.hashes_buffer.len());
 
-        let mut rle_right: Vec<u32> = Vec::with_capacity(self.hashes_buffer.len());
-        let mut pos_vect: Vec<u32> = Vec::with_capacity(100);
-        for (i, hash_val) in self.hashes_buffer.iter().enumerate() {
-            build_side
-                .hash_map
-                .get(*hash_val, start.value(i), end.value(i), |pos| {
-                    pos_vect.push(pos as u32);
-                });
-            rle_right.push(pos_vect.len() as u32);
-            builder_left.append_slice(&pos_vect);
-            pos_vect.clear();
-        }
-        let left_indexes = builder_left.finish();
-        let mut index_right = Vec::with_capacity(left_indexes.len());
-        for i in 0..rle_right.len() {
-            for _ in 0..rle_right[i] {
-                index_right.push(i as u32);
+        match &build_side.hash_map {
+            IntervalJoinAlgorithm::Coitrees {
+                hashmap: _,
+                use_sorted: true,
+            } => {
+                build_side.hash_map.process(
+                    &self.hashes_buffer,
+                    &start,
+                    &end,
+                    |(right_pos, left_pos)| {
+                        left_indexes.push(right_pos as u32);
+                        right_indexes.push(left_pos as u32);
+                    },
+                );
+            }
+            _ => {
+                for (i, hash_val) in self.hashes_buffer.iter().enumerate() {
+                    build_side
+                        .hash_map
+                        .get(*hash_val, start.value(i), end.value(i), |pos| {
+                            left_indexes.push(pos as u32);
+                            right_indexes.push(i as u32);
+                        })
+                }
             }
         }
-        let right_indexes = PrimitiveArray::from(index_right);
+
+        let left_indexes: UInt32Array = left_indexes.into();
+        let right_indexes: UInt32Array = right_indexes.into();
 
         let mut columns: Vec<Arc<dyn Array>> = Vec::with_capacity(self.schema.fields().len());
 
@@ -1243,9 +1297,11 @@ mod tests {
         let algs = [
             None,
             Some(Algorithm::Coitrees),
+            Some(Algorithm::SortedCoitrees),
             Some(Algorithm::IntervalTree),
             Some(Algorithm::ArrayIntervalTree),
             Some(Algorithm::AIList),
+            Some(Algorithm::Lapper),
         ];
 
         for alg in algs {
@@ -1338,6 +1394,7 @@ mod tests {
         let algs = [
             None,
             Some(Algorithm::Coitrees),
+            Some(Algorithm::SortedCoitrees),
             Some(Algorithm::IntervalTree),
             Some(Algorithm::ArrayIntervalTree),
             Some(Algorithm::AIList),

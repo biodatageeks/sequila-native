@@ -240,6 +240,7 @@ pub fn databio_benchmark(c: &mut Criterion) {
     ];
     let algorithms = [
         Algorithm::Coitrees,
+        Algorithm::SortedCoitrees,
         Algorithm::IntervalTree,
         Algorithm::ArrayIntervalTree,
         Algorithm::AIList,

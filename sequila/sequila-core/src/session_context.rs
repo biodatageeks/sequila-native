@@ -57,6 +57,7 @@ impl ConfigExtension for SequilaConfig {
 pub enum Algorithm {
     #[default]
     Coitrees,
+    SortedCoitrees,
     IntervalTree,
     ArrayIntervalTree,
     AIList,
@@ -81,6 +82,7 @@ impl FromStr for Algorithm {
     fn from_str(s: &str) -> Result<Algorithm, Self::Err> {
         match s.to_lowercase().as_str() {
             "coitrees" => Ok(Algorithm::Coitrees),
+            "sortedcoitrees" => Ok(Algorithm::SortedCoitrees),
             "intervaltree" => Ok(Algorithm::IntervalTree),
             "arrayintervaltree" => Ok(Algorithm::ArrayIntervalTree),
             "ailist" => Ok(Algorithm::AIList),
@@ -97,6 +99,7 @@ impl std::fmt::Display for Algorithm {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let val = match self {
             Algorithm::Coitrees => "Coitrees",
+            Algorithm::SortedCoitrees => "SortedCoitrees",
             Algorithm::IntervalTree => "IntervalTree",
             Algorithm::ArrayIntervalTree => "ArrayIntervalTree",
             Algorithm::AIList => "AIList",
