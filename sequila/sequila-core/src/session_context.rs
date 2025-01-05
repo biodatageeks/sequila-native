@@ -5,6 +5,7 @@ use datafusion::common::extensions_options;
 use datafusion::config::ConfigExtension;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::execution::SessionStateBuilder;
+use datafusion::physical_optimizer::optimizer::PhysicalOptimizer;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use log::info;
 use std::str::FromStr;
@@ -26,12 +27,16 @@ impl SeQuiLaSessionExt for SessionContext {
     }
 
     fn with_config_rt_sequila(config: SessionConfig, runtime: Arc<RuntimeEnv>) -> SessionContext {
+        let mut rules = PhysicalOptimizer::new().rules;
+        rules.retain(|rule| rule.name() != "join_selection");
+        rules.push(Arc::new(IntervalJoinPhysicalOptimizationRule));
+
         let ctx: SessionContext = SessionStateBuilder::new()
             .with_config(config)
             .with_runtime_env(runtime)
             .with_default_features()
             .with_query_planner(Arc::new(SeQuiLaQueryPlanner))
-            .with_physical_optimizer_rule(Arc::new(IntervalJoinPhysicalOptimizationRule))
+            .with_physical_optimizer_rules(rules)
             .build()
             .into();
 
@@ -61,6 +66,7 @@ pub enum Algorithm {
     ArrayIntervalTree,
     AIList,
     Lapper,
+    CoitreesNearest,
 }
 
 #[derive(Debug)]
@@ -85,6 +91,7 @@ impl FromStr for Algorithm {
             "arrayintervaltree" => Ok(Algorithm::ArrayIntervalTree),
             "ailist" => Ok(Algorithm::AIList),
             "lapper" => Ok(Algorithm::Lapper),
+            "coitreesnearest" => Ok(Algorithm::CoitreesNearest),
             _ => Err(ParseAlgorithmError(format!(
                 "Can't parse '{}' as Algorithm",
                 s
@@ -101,6 +108,7 @@ impl std::fmt::Display for Algorithm {
             Algorithm::ArrayIntervalTree => "ArrayIntervalTree",
             Algorithm::AIList => "AIList",
             Algorithm::Lapper => "Lapper",
+            Algorithm::CoitreesNearest => "CoitreesNearest",
         };
         write!(f, "{}", val)
     }
