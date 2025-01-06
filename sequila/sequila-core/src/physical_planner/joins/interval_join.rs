@@ -610,7 +610,7 @@ async fn collect_left_input(
             acc.0.push(batch);
             Ok(acc)
         })
-        .await?;
+        .await?; // 11.5mb 3250 al 768 tal
 
     // Estimation of memory size, required for hashtable, prior to allocation.
     // Final result can be verified using `RawTable.allocation_info()`
@@ -632,7 +632,7 @@ async fn collect_left_input(
     reservation.try_grow(estimated_hastable_size)?;
     metrics.build_mem_used.add(estimated_hastable_size);
 
-    let mut hashmap = HashMap::<u64, Vec<SequilaInterval>>::new();
+    let mut hashmap = HashMap::<u64, Vec<SequilaInterval>>::with_capacity(16);
     let mut hashes_buffer = Vec::new();
     let mut offset = 0;
 
@@ -641,7 +641,7 @@ async fn collect_left_input(
         // build a left hash map
         hashes_buffer.clear();
         hashes_buffer.resize(batch.num_rows(), 0);
-        update_hashmap(
+        update_hashmap( // 760 al, 370 tal -> 462 al, 130 al
             &on_left,
             &left_interval,
             batch,
@@ -653,9 +653,9 @@ async fn collect_left_input(
         offset += batch.num_rows();
     }
 
-    let hashmap = IntervalJoinAlgorithm::new(&algorithm, hashmap);
+    let hashmap = IntervalJoinAlgorithm::new(&algorithm, hashmap); // 14mb, 145 al
 
-    let single_batch = compute::concat_batches(&schema, &batches)?;
+    let single_batch = compute::concat_batches(&schema, &batches)?; // 10.7 mb, 356 al
     let data = JoinLeftData::new(hashmap, single_batch, reservation);
 
     Ok(data)
@@ -992,21 +992,15 @@ fn update_hashmap(
 
     let hash_values: &mut Vec<u64> = create_hashes(&keys_values, random_state, hashes_buffer)?;
 
-    let hash_values_iter: Vec<(usize, &u64)> = hash_values
-        .iter()
-        .enumerate()
-        .map(|(i, val)| (i + offset, val))
-        .collect::<Vec<_>>();
-
     let start = evaluate_as_i32(left_interval.start(), batch)?;
     let end = evaluate_as_i32(left_interval.end(), batch)?;
 
-    hash_values_iter
-        .into_iter()
+    hash_values
+        .iter()
         .enumerate()
-        .take(batch.num_rows())
-        .for_each(|(i, (position, hash_val))| {
-            let intervals: &mut Vec<SequilaInterval> = hash_map.entry(*hash_val).or_default();
+        .for_each(|(i, hash_val)| {
+            let position = i + offset;
+            let intervals: &mut Vec<SequilaInterval> = hash_map.entry(*hash_val).or_insert_with(|| Vec::with_capacity(4096));
             intervals.push(SequilaInterval::new(start.value(i), end.value(i), position))
         });
 

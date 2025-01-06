@@ -23,3 +23,9 @@ tokio = { version = "1.36.0", features = ["rt-multi-thread"] }
 env_logger = "0.11.5"
 log = "0.4.22"
 emojis = "0.6.3"
+
+[profile.release]
+debug = true
+#lto = true
+#opt-level = 3
+#codegen-units = 1
