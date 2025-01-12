@@ -24,8 +24,7 @@ env_logger = "0.11.5"
 log = "0.4.22"
 emojis = "0.6.3"
 
-[profile.release]
+# https://doc.rust-lang.org/cargo/reference/profiles.html#release
+[profile.profiling]
+inherits = "release"
 debug = true
-#lto = true
-#opt-level = 3
-#codegen-units = 1

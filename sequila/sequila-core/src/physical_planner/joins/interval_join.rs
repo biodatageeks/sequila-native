@@ -6,7 +6,6 @@ use crate::physical_planner::joins::utils::{
 use crate::session_context::Algorithm;
 use ahash::RandomState;
 use bio::data_structures::interval_tree as rust_bio;
-use coitrees::{COITree, Interval};
 use datafusion::arrow::array::{Array, AsArray, PrimitiveArray, PrimitiveBuilder, RecordBatch};
 use datafusion::arrow::compute;
 use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef, UInt32Type};
@@ -40,6 +39,9 @@ use std::mem::size_of;
 use std::sync::Arc;
 use std::task::Poll;
 
+// Max number of records in left side is 18,446,744,073,709,551,615 (usize::MAX on 64 bit)
+// We can switch to u32::MAX which is 4,294,967,295
+// which consumes ~30% less memory when building COITrees but limits the number of elements.
 type Position = usize;
 
 #[derive(Debug)]
@@ -610,7 +612,7 @@ async fn collect_left_input(
             acc.0.push(batch);
             Ok(acc)
         })
-        .await?; // 11.5mb 3250 al 768 tal
+        .await?;
 
     // Estimation of memory size, required for hashtable, prior to allocation.
     // Final result can be verified using `RawTable.allocation_info()`
@@ -641,7 +643,7 @@ async fn collect_left_input(
         // build a left hash map
         hashes_buffer.clear();
         hashes_buffer.resize(batch.num_rows(), 0);
-        update_hashmap( // 760 al, 370 tal -> 462 al, 130 al
+        update_hashmap(
             &on_left,
             &left_interval,
             batch,
@@ -653,9 +655,9 @@ async fn collect_left_input(
         offset += batch.num_rows();
     }
 
-    let hashmap = IntervalJoinAlgorithm::new(&algorithm, hashmap); // 14mb, 145 al
+    let hashmap = IntervalJoinAlgorithm::new(&algorithm, hashmap);
 
-    let single_batch = compute::concat_batches(&schema, &batches)?; // 10.7 mb, 356 al
+    let single_batch = compute::concat_batches(&schema, &batches)?;
     let data = JoinLeftData::new(hashmap, single_batch, reservation);
 
     Ok(data)
@@ -703,7 +705,15 @@ enum IntervalJoinAlgorithm {
     ArrayIntervalTree(FnvHashMap<u64, rust_bio::ArrayBackedIntervalTree<i32, Position>>),
     AIList(FnvHashMap<u64, scailist::ScAIList<Position>>),
     Lapper(FnvHashMap<u64, rust_lapper::Lapper<u32, Position>>),
-    CoitresNearest(FnvHashMap<u64, (COITree<Position, u32>, Vec<Interval<Position>>)>),
+    CoitresNearest(
+        FnvHashMap<
+            u64,
+            (
+                coitrees::COITree<Position, u32>,
+                Vec<coitrees::Interval<Position>>,
+            ),
+        >,
+    ),
 }
 
 impl Debug for IntervalJoinAlgorithm {
@@ -868,7 +878,12 @@ impl IntervalJoinAlgorithm {
         *node.metadata
     }
 
-    fn nearest(&self, start: i32, end: i32, ranges2: &[Interval<Position>]) -> Option<Position> {
+    fn nearest(
+        &self,
+        start: i32,
+        end: i32,
+        ranges2: &[coitrees::Interval<Position>],
+    ) -> Option<Position> {
         if ranges2.is_empty() {
             return None;
         }
@@ -995,14 +1010,13 @@ fn update_hashmap(
     let start = evaluate_as_i32(left_interval.start(), batch)?;
     let end = evaluate_as_i32(left_interval.end(), batch)?;
 
-    hash_values
-        .iter()
-        .enumerate()
-        .for_each(|(i, hash_val)| {
-            let position = i + offset;
-            let intervals: &mut Vec<SequilaInterval> = hash_map.entry(*hash_val).or_insert_with(|| Vec::with_capacity(4096));
-            intervals.push(SequilaInterval::new(start.value(i), end.value(i), position))
-        });
+    hash_values.iter().enumerate().for_each(|(i, hash_val)| {
+        let position: Position = i + offset;
+        let intervals: &mut Vec<SequilaInterval> = hash_map
+            .entry(*hash_val)
+            .or_insert_with(|| Vec::with_capacity(4096));
+        intervals.push(SequilaInterval::new(start.value(i), end.value(i), position))
+    });
 
     Ok(())
 }
