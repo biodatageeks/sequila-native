@@ -242,7 +242,6 @@ pub fn databio_benchmark(c: &mut Criterion) {
         Algorithm::Coitrees,
         Algorithm::IntervalTree,
         Algorithm::ArrayIntervalTree,
-        Algorithm::AIList,
         Algorithm::Lapper,
     ];
     let runtime = tokio::runtime::Builder::new_current_thread()

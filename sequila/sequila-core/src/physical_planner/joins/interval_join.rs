@@ -681,13 +681,6 @@ impl SequilaInterval {
     fn into_rust_bio(self) -> (std::ops::Range<i32>, Position) {
         (self.start..self.end + 1, self.position)
     }
-    fn into_ailist(self) -> scailist::Interval<Position> {
-        scailist::Interval {
-            start: self.start as u32,
-            end: self.end as u32 + 1,
-            val: self.position,
-        }
-    }
     fn into_lapper(self) -> rust_lapper::Interval<u32, Position> {
         rust_lapper::Interval {
             start: self.start as u32,
@@ -701,7 +694,6 @@ enum IntervalJoinAlgorithm {
     Coitrees(FnvHashMap<u64, coitrees::COITree<Position, u32>>),
     IntervalTree(FnvHashMap<u64, rust_bio::IntervalTree<i32, Position>>),
     ArrayIntervalTree(FnvHashMap<u64, rust_bio::ArrayBackedIntervalTree<i32, Position>>),
-    AIList(FnvHashMap<u64, scailist::ScAIList<Position>>),
     Lapper(FnvHashMap<u64, rust_lapper::Lapper<u32, Position>>),
     CoitresNearest(FnvHashMap<u64, (COITree<Position, u32>, Vec<Interval<Position>>)>),
 }
@@ -725,7 +717,6 @@ impl Debug for IntervalJoinAlgorithm {
             IntervalJoinAlgorithm::ArrayIntervalTree(m) => {
                 f.debug_struct("ArrayIntervalTree").field("0", m).finish()
             }
-            IntervalJoinAlgorithm::AIList(m) => f.debug_struct("AIList").field("0", m).finish(),
             IntervalJoinAlgorithm::Lapper(m) => f.debug_struct("Lapper").field("0", m).finish(),
         }
     }
@@ -800,21 +791,6 @@ impl IntervalJoinAlgorithm {
                     .collect::<FnvHashMap<u64, rust_bio::ArrayBackedIntervalTree<i32, Position>>>();
 
                 IntervalJoinAlgorithm::ArrayIntervalTree(hashmap)
-            }
-            Algorithm::AIList => {
-                let hashmap = hash_map
-                    .into_iter()
-                    .map(|(k, v)| {
-                        let intervals = v
-                            .into_iter()
-                            .map(SequilaInterval::into_ailist)
-                            .collect::<Vec<scailist::Interval<Position>>>();
-
-                        (k, scailist::ScAIList::new(intervals, None))
-                    })
-                    .collect::<FnvHashMap<u64, scailist::ScAIList<Position>>>();
-
-                IntervalJoinAlgorithm::AIList(hashmap)
             }
             Algorithm::Lapper => {
                 use rust_lapper::*;
@@ -955,13 +931,6 @@ impl IntervalJoinAlgorithm {
                 if let Some(tree) = hashmap.get(&k) {
                     for entry in tree.find(start..end + 1) {
                         f(*entry.data())
-                    }
-                }
-            }
-            IntervalJoinAlgorithm::AIList(hashmap) => {
-                if let Some(list) = hashmap.get(&k) {
-                    for interval in list.find(start as u32, end as u32 + 1) {
-                        f(interval.val)
                     }
                 }
             }
@@ -1361,7 +1330,6 @@ mod tests {
             Some(Algorithm::Coitrees),
             Some(Algorithm::IntervalTree),
             Some(Algorithm::ArrayIntervalTree),
-            Some(Algorithm::AIList),
         ];
 
         for alg in algs {
@@ -1456,7 +1424,6 @@ mod tests {
             Some(Algorithm::Coitrees),
             Some(Algorithm::IntervalTree),
             Some(Algorithm::ArrayIntervalTree),
-            Some(Algorithm::AIList),
             Some(Algorithm::Lapper),
         ];
 

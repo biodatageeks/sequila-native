@@ -64,7 +64,6 @@ pub enum Algorithm {
     Coitrees,
     IntervalTree,
     ArrayIntervalTree,
-    AIList,
     Lapper,
     CoitreesNearest,
 }
@@ -89,7 +88,6 @@ impl FromStr for Algorithm {
             "coitrees" => Ok(Algorithm::Coitrees),
             "intervaltree" => Ok(Algorithm::IntervalTree),
             "arrayintervaltree" => Ok(Algorithm::ArrayIntervalTree),
-            "ailist" => Ok(Algorithm::AIList),
             "lapper" => Ok(Algorithm::Lapper),
             "coitreesnearest" => Ok(Algorithm::CoitreesNearest),
             _ => Err(ParseAlgorithmError(format!(
@@ -106,7 +104,6 @@ impl std::fmt::Display for Algorithm {
             Algorithm::Coitrees => "Coitrees",
             Algorithm::IntervalTree => "IntervalTree",
             Algorithm::ArrayIntervalTree => "ArrayIntervalTree",
-            Algorithm::AIList => "AIList",
             Algorithm::Lapper => "Lapper",
             Algorithm::CoitreesNearest => "CoitreesNearest",
         };
