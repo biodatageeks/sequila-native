@@ -6,7 +6,6 @@ use crate::physical_planner::joins::utils::{
 use crate::session_context::Algorithm;
 use ahash::RandomState;
 use bio::data_structures::interval_tree as rust_bio;
-use coitrees::{COITree, Interval};
 use datafusion::arrow::array::{Array, AsArray, PrimitiveArray, PrimitiveBuilder, RecordBatch};
 use datafusion::arrow::compute;
 use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef, UInt32Type};
@@ -40,6 +39,9 @@ use std::mem::size_of;
 use std::sync::Arc;
 use std::task::Poll;
 
+// Max number of records in left side is 18,446,744,073,709,551,615 (usize::MAX on 64 bit)
+// We can switch to u32::MAX which is 4,294,967,295
+// which consumes ~30% less memory when building COITrees but limits the number of elements.
 type Position = usize;
 
 #[derive(Debug)]
@@ -632,7 +634,7 @@ async fn collect_left_input(
     reservation.try_grow(estimated_hastable_size)?;
     metrics.build_mem_used.add(estimated_hastable_size);
 
-    let mut hashmap = HashMap::<u64, Vec<SequilaInterval>>::new();
+    let mut hashmap = HashMap::<u64, Vec<SequilaInterval>>::with_capacity(16);
     let mut hashes_buffer = Vec::new();
     let mut offset = 0;
 
@@ -703,7 +705,15 @@ enum IntervalJoinAlgorithm {
     ArrayIntervalTree(FnvHashMap<u64, rust_bio::ArrayBackedIntervalTree<i32, Position>>),
     AIList(FnvHashMap<u64, scailist::ScAIList<Position>>),
     Lapper(FnvHashMap<u64, rust_lapper::Lapper<u32, Position>>),
-    CoitresNearest(FnvHashMap<u64, (COITree<Position, u32>, Vec<Interval<Position>>)>),
+    CoitresNearest(
+        FnvHashMap<
+            u64,
+            (
+                coitrees::COITree<Position, u32>,
+                Vec<coitrees::Interval<Position>>,
+            ),
+        >,
+    ),
 }
 
 impl Debug for IntervalJoinAlgorithm {
@@ -868,7 +878,12 @@ impl IntervalJoinAlgorithm {
         *node.metadata
     }
 
-    fn nearest(&self, start: i32, end: i32, ranges2: &[Interval<Position>]) -> Option<Position> {
+    fn nearest(
+        &self,
+        start: i32,
+        end: i32,
+        ranges2: &[coitrees::Interval<Position>],
+    ) -> Option<Position> {
         if ranges2.is_empty() {
             return None;
         }
@@ -992,23 +1007,16 @@ fn update_hashmap(
 
     let hash_values: &mut Vec<u64> = create_hashes(&keys_values, random_state, hashes_buffer)?;
 
-    let hash_values_iter: Vec<(usize, &u64)> = hash_values
-        .iter()
-        .enumerate()
-        .map(|(i, val)| (i + offset, val))
-        .collect::<Vec<_>>();
-
     let start = evaluate_as_i32(left_interval.start(), batch)?;
     let end = evaluate_as_i32(left_interval.end(), batch)?;
 
-    hash_values_iter
-        .into_iter()
-        .enumerate()
-        .take(batch.num_rows())
-        .for_each(|(i, (position, hash_val))| {
-            let intervals: &mut Vec<SequilaInterval> = hash_map.entry(*hash_val).or_default();
-            intervals.push(SequilaInterval::new(start.value(i), end.value(i), position))
-        });
+    hash_values.iter().enumerate().for_each(|(i, hash_val)| {
+        let position: Position = i + offset;
+        let intervals: &mut Vec<SequilaInterval> = hash_map
+            .entry(*hash_val)
+            .or_insert_with(|| Vec::with_capacity(4096));
+        intervals.push(SequilaInterval::new(start.value(i), end.value(i), position))
+    });
 
     Ok(())
 }
