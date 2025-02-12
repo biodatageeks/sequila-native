@@ -66,6 +66,7 @@ pub enum Algorithm {
     ArrayIntervalTree,
     Lapper,
     CoitreesNearest,
+    CoitreesCountOverlaps,
 }
 
 #[derive(Debug)]
@@ -90,6 +91,7 @@ impl FromStr for Algorithm {
             "arrayintervaltree" => Ok(Algorithm::ArrayIntervalTree),
             "lapper" => Ok(Algorithm::Lapper),
             "coitreesnearest" => Ok(Algorithm::CoitreesNearest),
+            "coitreescountoverlaps" => Ok(Algorithm::CoitreesCountOverlaps),
             _ => Err(ParseAlgorithmError(format!(
                 "Can't parse '{}' as Algorithm",
                 s
@@ -106,6 +108,7 @@ impl std::fmt::Display for Algorithm {
             Algorithm::ArrayIntervalTree => "ArrayIntervalTree",
             Algorithm::Lapper => "Lapper",
             Algorithm::CoitreesNearest => "CoitreesNearest",
+            Algorithm::CoitreesCountOverlaps => "CoitreesCountOverlaps",
         };
         write!(f, "{}", val)
     }
