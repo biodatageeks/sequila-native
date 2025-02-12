@@ -67,6 +67,7 @@ pub enum Algorithm {
     AIList,
     Lapper,
     CoitreesNearest,
+    CoitreesCountOverlaps,
 }
 
 #[derive(Debug)]
@@ -92,6 +93,7 @@ impl FromStr for Algorithm {
             "ailist" => Ok(Algorithm::AIList),
             "lapper" => Ok(Algorithm::Lapper),
             "coitreesnearest" => Ok(Algorithm::CoitreesNearest),
+            "coitreescountoverlaps" => Ok(Algorithm::CoitreesCountOverlaps),
             _ => Err(ParseAlgorithmError(format!(
                 "Can't parse '{}' as Algorithm",
                 s
@@ -109,6 +111,7 @@ impl std::fmt::Display for Algorithm {
             Algorithm::AIList => "AIList",
             Algorithm::Lapper => "Lapper",
             Algorithm::CoitreesNearest => "CoitreesNearest",
+            Algorithm::CoitreesCountOverlaps => "CoitreesCountOverlaps",
         };
         write!(f, "{}", val)
     }
