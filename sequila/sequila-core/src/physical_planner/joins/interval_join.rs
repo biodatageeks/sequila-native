@@ -940,7 +940,7 @@ impl IntervalJoinAlgorithm {
                     // found no overlaps in the tree - try to look for nearest intervals
                     if i == 0 {
                         let position = self.nearest(start, end, &tree.1);
-                        f(position.unwrap());
+                        f(1);
                     }
                 }
             }
@@ -1165,8 +1165,14 @@ impl IntervalJoinStream {
 
         let mut builder_left = PrimitiveBuilder::<UInt32Type>::new();
 
-        let mut rle_right: Vec<u32> = Vec::with_capacity(self.hashes_buffer.len());
-        let mut pos_vect: Vec<u32> = Vec::with_capacity(100);
+        let mut rle_right: Vec<u32> = match &build_side.hash_map {
+            IntervalJoinAlgorithm::CoitreesNearest(_t) => vec![],
+            _ => Vec::with_capacity(100),
+        };
+        let mut pos_vect: Vec<u32> = match &build_side.hash_map {
+            IntervalJoinAlgorithm::CoitreesNearest(_t) => vec![],
+            _ => Vec::with_capacity(100),
+        };
         for (i, hash_val) in self.hashes_buffer.iter().enumerate() {
             build_side
                 .hash_map
@@ -1176,7 +1182,7 @@ impl IntervalJoinStream {
             match &build_side.hash_map {
                 IntervalJoinAlgorithm::CoitreesNearest(_t) => {
                     // even if there is no hit we need to preserve the right side
-                    rle_right.push(1);
+                    // rle_right.push(1);
                     if pos_vect.len() == 0 {
                         builder_left.append_null();
                     } else {
@@ -1201,10 +1207,19 @@ impl IntervalJoinStream {
             pos_vect.clear();
         }
         let left_indexes = builder_left.finish();
-        let mut index_right = Vec::with_capacity(left_indexes.len());
-        for i in 0..rle_right.len() {
-            for _ in 0..rle_right[i] {
-                index_right.push(i as u32);
+        let mut index_right = match &build_side.hash_map {
+            IntervalJoinAlgorithm::CoitreesNearest(_t) => vec![],
+            _ => Vec::with_capacity(100),
+        };
+
+        match &build_side.hash_map {
+            IntervalJoinAlgorithm::CoitreesNearest(_t) => {}
+            _ => {
+                for i in 0..rle_right.len() {
+                    for _ in 0..rle_right[i] {
+                        index_right.push(i as u32);
+                    }
+                }
             }
         }
         let right_indexes = PrimitiveArray::from(index_right);
@@ -1217,11 +1232,11 @@ impl IntervalJoinStream {
                 compute::take(array, &left_indexes, None)?
             } else if column_index.side == JoinSide::Right {
                 let array = state.batch.column(column_index.index);
+                // compute::take(array, &right_indexes, None)?
                 match &build_side.hash_map {
                     IntervalJoinAlgorithm::CoitreesNearest(_t) => Arc::clone(array),
                     _ => compute::take(array, &right_indexes, None)?,
                 }
-                // compute::take(array, &right_indexes, None)?
             } else {
                 panic!("Unsupported join_side {:?}", column_index.side);
             };
