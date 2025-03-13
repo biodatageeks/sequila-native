@@ -1217,7 +1217,11 @@ impl IntervalJoinStream {
                 compute::take(array, &left_indexes, None)?
             } else if column_index.side == JoinSide::Right {
                 let array = state.batch.column(column_index.index);
-                compute::take(array, &right_indexes, None)?
+                match &build_side.hash_map {
+                    IntervalJoinAlgorithm::CoitreesNearest(_t) => Arc::clone(array),
+                    _ => compute::take(array, &right_indexes, None)?,
+                }
+                // compute::take(array, &right_indexes, None)?
             } else {
                 panic!("Unsupported join_side {:?}", column_index.side);
             };
