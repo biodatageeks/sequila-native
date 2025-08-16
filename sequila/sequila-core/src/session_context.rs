@@ -2,7 +2,7 @@ use crate::physical_planner::IntervalJoinPhysicalOptimizationRule;
 use crate::physical_planner::SeQuiLaQueryPlanner;
 use async_trait::async_trait;
 use datafusion::common::extensions_options;
-use datafusion::config::ConfigExtension;
+use datafusion::config::{ConfigExtension, ConfigField};
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_optimizer::optimizer::PhysicalOptimizer;
@@ -111,5 +111,22 @@ impl std::fmt::Display for Algorithm {
             Algorithm::CoitreesCountOverlaps => "CoitreesCountOverlaps",
         };
         write!(f, "{}", val)
+    }
+}
+
+impl From<ParseAlgorithmError> for datafusion::error::DataFusionError {
+    fn from(e: ParseAlgorithmError) -> Self {
+        datafusion::error::DataFusionError::External(Box::new(e))
+    }
+}
+
+impl ConfigField for Algorithm {
+    fn set(&mut self, _key: &str, value: &str) -> datafusion::common::Result<()> {
+        *self = value.parse::<Algorithm>()?;
+        Ok(())
+    }
+
+    fn visit<V: datafusion::config::Visit>(&self, visitor: &mut V, name: &str, doc: &'static str) {
+        visitor.some(name, self, doc)
     }
 }

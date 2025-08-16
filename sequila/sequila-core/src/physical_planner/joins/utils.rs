@@ -21,43 +21,49 @@ use std::future::Future;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use datafusion::arrow::datatypes::Schema;
 use datafusion::common::stats::Precision;
 use datafusion::common::{DataFusionError, JoinType, Result, SharedResult};
 use datafusion::logical_expr::interval_arithmetic::Interval;
 use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_plan::execution_plan::Boundedness;
 use datafusion::physical_plan::joins::utils::{adjust_right_output_partitioning, JoinOn};
 use datafusion::physical_plan::metrics;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricBuilder};
-use datafusion::physical_plan::{ColumnStatistics, ExecutionMode, ExecutionPlan, Statistics};
+use datafusion::physical_plan::{ColumnStatistics, ExecutionPlan, Statistics};
 use datafusion::physical_plan::{ExecutionPlanProperties, Partitioning};
+
+pub(crate) fn boundedness_from_children<'a>(
+    children: impl IntoIterator<Item = &'a Arc<dyn ExecutionPlan>>,
+) -> Boundedness {
+    let mut unbounded_with_finite_mem = false;
+    for child in children {
+        match child.boundedness() {
+            Boundedness::Unbounded {
+                requires_infinite_memory: true,
+            } => {
+                return Boundedness::Unbounded {
+                    requires_infinite_memory: true,
+                }
+            }
+            Boundedness::Unbounded {
+                requires_infinite_memory: false,
+            } => {
+                unbounded_with_finite_mem = true;
+            }
+            Boundedness::Bounded => {}
+        }
+    }
+    if unbounded_with_finite_mem {
+        Boundedness::Unbounded {
+            requires_infinite_memory: false,
+        }
+    } else {
+        Boundedness::Bounded
+    }
+}
 use futures::future::{BoxFuture, Shared};
 use futures::{ready, FutureExt};
 use parking_lot::Mutex;
-
-/// Conservatively "combines" execution modes of a given collection of operators.
-pub fn execution_mode_from_children<'a>(
-    children: impl IntoIterator<Item = &'a Arc<dyn ExecutionPlan>>,
-) -> ExecutionMode {
-    let mut result = ExecutionMode::Bounded;
-    for mode in children.into_iter().map(|child| child.execution_mode()) {
-        match (mode, result) {
-            (ExecutionMode::PipelineBreaking, _) | (_, ExecutionMode::PipelineBreaking) => {
-                // If any of the modes is `PipelineBreaking`, so is the result:
-                return ExecutionMode::PipelineBreaking;
-            }
-            (ExecutionMode::Unbounded, _) | (_, ExecutionMode::Unbounded) => {
-                // Unbounded mode eats up bounded mode:
-                result = ExecutionMode::Unbounded;
-            }
-            (ExecutionMode::Bounded, ExecutionMode::Bounded) => {
-                // When both modes are bounded, so is the result:
-                result = ExecutionMode::Bounded;
-            }
-        }
-    }
-    result
-}
 
 /// A [`OnceAsync`] can be used to run an async closure once, with subsequent calls
 /// to [`OnceAsync::once`] returning a [`OnceFut`] to the same asynchronous computation
@@ -132,15 +138,14 @@ pub(crate) fn estimate_join_statistics(
     right: Arc<dyn ExecutionPlan>,
     on: JoinOn,
     join_type: &JoinType,
-    schema: &Schema,
 ) -> Result<Statistics> {
-    let left_stats = left.statistics()?;
-    let right_stats = right.statistics()?;
-
+    let left_stats = left.partition_statistics(None)?;
+    let right_stats = right.partition_statistics(None)?;
+    let schema = left.schema();
     let join_stats = estimate_join_cardinality(join_type, left_stats, right_stats, &on);
     let (num_rows, column_statistics) = match join_stats {
         Some(stats) => (Precision::Inexact(stats.num_rows), stats.column_statistics),
-        None => (Precision::Absent, Statistics::unknown_column(schema)),
+        None => (Precision::Absent, Statistics::unknown_column(&schema)),
     };
     Ok(Statistics {
         num_rows,

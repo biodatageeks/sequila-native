@@ -20,6 +20,7 @@ use datafusion::physical_expr::expressions::CastExpr;
 use datafusion::physical_expr::{Distribution, Partitioning, PhysicalExpr, PhysicalExprRef};
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::common::can_project;
+use datafusion::physical_plan::execution_plan::EmissionType;
 use datafusion::physical_plan::joins::utils::{
     adjust_right_output_partitioning, build_join_schema, check_join_is_valid, ColumnIndex,
     JoinFilter, JoinOn, JoinOnRef, StatefulStreamResult,
@@ -27,8 +28,8 @@ use datafusion::physical_plan::joins::utils::{
 use datafusion::physical_plan::joins::PartitionMode;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::{
-    handle_state, DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan,
-    ExecutionPlanProperties, PlanProperties,
+    handle_state, DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties,
+    PlanProperties,
 };
 use fnv::FnvHashMap;
 use futures::{ready, Stream, StreamExt, TryStreamExt};
@@ -294,21 +295,8 @@ impl IntervalJoinExec {
             }
         };
 
-        // Determine execution mode by checking whether this join is pipeline
-        // breaking. This happens when the left side is unbounded, or the right
-        // side is unbounded with `Left`, `Full`, `LeftAnti` or `LeftSemi` join types.
-        let pipeline_breaking = left.execution_mode().is_unbounded()
-            || (right.execution_mode().is_unbounded()
-                && matches!(
-                    join_type,
-                    JoinType::Left | JoinType::Full | JoinType::LeftAnti | JoinType::LeftSemi
-                ));
-
-        let mode = if pipeline_breaking {
-            ExecutionMode::PipelineBreaking
-        } else {
-            crate::physical_planner::joins::utils::execution_mode_from_children([left, right])
-        };
+        let boundedness =
+            crate::physical_planner::joins::utils::boundedness_from_children([left, right]);
 
         // If contains projection, update the PlanProperties.
         if let Some(projection) = projection {
@@ -321,7 +309,8 @@ impl IntervalJoinExec {
         Ok(PlanProperties::new(
             eq_properties,
             output_partitioning,
-            mode,
+            EmissionType::Final,
+            boundedness,
         ))
     }
 }
@@ -369,6 +358,7 @@ impl DisplayAs for IntervalJoinExec {
                     self.algorithm
                 )
             }
+            DisplayFormatType::TreeRender => todo!(),
         }
     }
 }
@@ -561,7 +551,6 @@ impl ExecutionPlan for IntervalJoinExec {
             Arc::clone(&self.right),
             self.on.clone(),
             &self.join_type,
-            &self.join_schema,
         )?;
         // Project statistics if there is a projection
         Ok(stats.project(self.projection.as_ref()))
