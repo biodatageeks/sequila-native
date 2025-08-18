@@ -20,6 +20,7 @@ use datafusion::physical_expr::expressions::CastExpr;
 use datafusion::physical_expr::{Distribution, Partitioning, PhysicalExpr, PhysicalExprRef};
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::common::can_project;
+use datafusion::physical_plan::execution_plan::EmissionType;
 use datafusion::physical_plan::joins::utils::{
     adjust_right_output_partitioning, build_join_schema, check_join_is_valid, ColumnIndex,
     JoinFilter, JoinOn, JoinOnRef, StatefulStreamResult,
@@ -27,8 +28,8 @@ use datafusion::physical_plan::joins::utils::{
 use datafusion::physical_plan::joins::PartitionMode;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::{
-    handle_state, DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan,
-    ExecutionPlanProperties, PlanProperties,
+    handle_state, DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties,
+    PlanProperties,
 };
 use fnv::FnvHashMap;
 use futures::{ready, Stream, StreamExt, TryStreamExt};
@@ -294,21 +295,8 @@ impl IntervalJoinExec {
             }
         };
 
-        // Determine execution mode by checking whether this join is pipeline
-        // breaking. This happens when the left side is unbounded, or the right
-        // side is unbounded with `Left`, `Full`, `LeftAnti` or `LeftSemi` join types.
-        let pipeline_breaking = left.execution_mode().is_unbounded()
-            || (right.execution_mode().is_unbounded()
-                && matches!(
-                    join_type,
-                    JoinType::Left | JoinType::Full | JoinType::LeftAnti | JoinType::LeftSemi
-                ));
-
-        let mode = if pipeline_breaking {
-            ExecutionMode::PipelineBreaking
-        } else {
-            crate::physical_planner::joins::utils::execution_mode_from_children([left, right])
-        };
+        let boundedness =
+            crate::physical_planner::joins::utils::boundedness_from_children([left, right]);
 
         // If contains projection, update the PlanProperties.
         if let Some(projection) = projection {
@@ -321,7 +309,8 @@ impl IntervalJoinExec {
         Ok(PlanProperties::new(
             eq_properties,
             output_partitioning,
-            mode,
+            EmissionType::Final,
+            boundedness,
         ))
     }
 }
@@ -369,6 +358,7 @@ impl DisplayAs for IntervalJoinExec {
                     self.algorithm
                 )
             }
+            DisplayFormatType::TreeRender => todo!(),
         }
     }
 }
@@ -561,7 +551,6 @@ impl ExecutionPlan for IntervalJoinExec {
             Arc::clone(&self.right),
             self.on.clone(),
             &self.join_type,
-            &self.join_schema,
         )?;
         // Project statistics if there is a projection
         Ok(stats.project(self.projection.as_ref()))
@@ -697,7 +686,7 @@ enum IntervalJoinAlgorithm {
     IntervalTree(FnvHashMap<u64, rust_bio::IntervalTree<i32, Position>>),
     ArrayIntervalTree(FnvHashMap<u64, rust_bio::ArrayBackedIntervalTree<i32, Position>>),
     Lapper(FnvHashMap<u64, rust_lapper::Lapper<u32, Position>>),
-    CoitresNearest(
+    CoitreesNearest(
         FnvHashMap<
             u64,
             (
@@ -706,6 +695,7 @@ enum IntervalJoinAlgorithm {
             ),
         >,
     ),
+    CoitreesCountOverlaps(FnvHashMap<u64, coitrees::COITree<Position, u32>>),
 }
 
 impl Debug for IntervalJoinAlgorithm {
@@ -719,7 +709,8 @@ impl Debug for IntervalJoinAlgorithm {
                     .collect::<HashMap<_, _>>();
                 f.debug_struct("Coitrees").field("0", &q).finish()
             }
-            &IntervalJoinAlgorithm::CoitresNearest(_) => todo!(),
+            &IntervalJoinAlgorithm::CoitreesNearest(_) => todo!(),
+            &IntervalJoinAlgorithm::CoitreesCountOverlaps(_) => todo!(),
 
             IntervalJoinAlgorithm::IntervalTree(m) => {
                 f.debug_struct("IntervalTree").field("0", m).finish()
@@ -735,7 +726,7 @@ impl Debug for IntervalJoinAlgorithm {
 impl IntervalJoinAlgorithm {
     fn new(alg: &Algorithm, hash_map: HashMap<u64, Vec<SequilaInterval>>) -> IntervalJoinAlgorithm {
         match alg {
-            Algorithm::Coitrees => {
+            Algorithm::Coitrees | Algorithm::CoitreesCountOverlaps => {
                 use coitrees::{COITree, Interval, IntervalTree};
 
                 let hashmap = hash_map
@@ -752,7 +743,13 @@ impl IntervalJoinAlgorithm {
                     })
                     .collect::<FnvHashMap<u64, COITree<Position, u32>>>();
 
-                IntervalJoinAlgorithm::Coitrees(hashmap)
+                match alg {
+                    Algorithm::Coitrees => IntervalJoinAlgorithm::Coitrees(hashmap),
+                    Algorithm::CoitreesCountOverlaps => {
+                        IntervalJoinAlgorithm::CoitreesCountOverlaps(hashmap)
+                    }
+                    _ => unreachable!(),
+                }
             }
             Algorithm::CoitreesNearest => {
                 use coitrees::{COITree, Interval, IntervalTree};
@@ -774,7 +771,7 @@ impl IntervalJoinAlgorithm {
                     })
                     .collect::<FnvHashMap<u64, (COITree<Position, u32>, Vec<Interval<Position>>)>>(
                     );
-                IntervalJoinAlgorithm::CoitresNearest(hashmap)
+                IntervalJoinAlgorithm::CoitreesNearest(hashmap)
             }
             Algorithm::IntervalTree => {
                 let hashmap = hash_map
@@ -907,7 +904,8 @@ impl IntervalJoinAlgorithm {
         F: FnMut(Position),
     {
         match self {
-            IntervalJoinAlgorithm::Coitrees(hashmap) => {
+            IntervalJoinAlgorithm::Coitrees(hashmap)
+            | IntervalJoinAlgorithm::CoitreesCountOverlaps(hashmap) => {
                 use coitrees::IntervalTree;
                 if let Some(tree) = hashmap.get(&k) {
                     tree.query(start, end, |node| {
@@ -916,7 +914,7 @@ impl IntervalJoinAlgorithm {
                     });
                 }
             }
-            IntervalJoinAlgorithm::CoitresNearest(hashmap) => {
+            IntervalJoinAlgorithm::CoitreesNearest(hashmap) => {
                 use coitrees::IntervalTree;
                 if let Some(tree) = hashmap.get(&k) {
                     let mut i = 0;
@@ -1165,8 +1163,16 @@ impl IntervalJoinStream {
                     pos_vect.push(pos as u32);
                 });
             match &build_side.hash_map {
-                IntervalJoinAlgorithm::CoitresNearest(_t) => {
+                IntervalJoinAlgorithm::CoitreesNearest(_t) => {
                     // even if there is no hit we need to preserve the right side
+                    rle_right.push(1);
+                    if pos_vect.len() == 0 {
+                        builder_left.append_null();
+                    } else {
+                        builder_left.append_slice(&pos_vect);
+                    }
+                }
+                IntervalJoinAlgorithm::CoitreesCountOverlaps(_t) => {
                     rle_right.push(1);
                     if pos_vect.len() == 0 {
                         builder_left.append_null();
