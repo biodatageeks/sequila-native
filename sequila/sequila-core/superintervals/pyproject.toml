@@ -1,0 +1,14 @@
+[build-system]
+requires = [
+    "setuptools>=42",
+    "wheel",
+    "Cython"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "superintervals"
+version = "0.3.6"
+description = "Rapid interval intersections"
+dependencies = ['Cython']
+authors = [{name = "Kez Cleal", email = "clealk@cardiff.ac.uk"}]
