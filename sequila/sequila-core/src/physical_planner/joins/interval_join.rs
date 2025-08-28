@@ -40,9 +40,6 @@ use std::mem::size_of;
 use std::sync::Arc;
 use std::task::Poll;
 
-pub mod mlx_interval;
-use mlx_interval::AppleSiliconIntervalMap;
-
 // Max number of records in left side is 18,446,744,073,709,551,615 (usize::MAX on 64 bit)
 // We can switch to u32::MAX which is 4,294,967,295
 // which consumes ~30% less memory when building COITrees but limits the number of elements.
@@ -717,7 +714,6 @@ pub enum IntervalJoinAlgorithm {
         >,
     ),
     CoitreesCountOverlaps(FnvHashMap<u64, coitrees::COITree<Position, u32>>),
-    MLX(AppleSiliconIntervalMap),
 }
 
 impl Debug for IntervalJoinAlgorithm {
@@ -744,7 +740,6 @@ impl Debug for IntervalJoinAlgorithm {
             IntervalJoinAlgorithm::SuperIntervals(m) => {
                 f.debug_struct("SuperIntervals").field("0", m).finish()
             }
-            IntervalJoinAlgorithm::MLX(m) => f.debug_struct("AppleSilicon").field("0", m).finish(),
         }
     }
 }
@@ -1003,29 +998,6 @@ impl IntervalJoinAlgorithm {
                         f(val);
                     }
                 }
-            }
-            IntervalJoinAlgorithm::MLX(mlx_map) => {
-                mlx_map.get(k, start, end, f);
-            }
-        }
-    }
-
-    /// Batch search method for efficient query processing
-    pub fn batch_search(&self, key: u64, queries: &[(i32, i32)]) -> Vec<Vec<Position>> {
-        match self {
-            // Only Apple Silicon implementation supports true batch processing
-            IntervalJoinAlgorithm::MLX(mlx_map) => mlx_map.batch_search(key, queries),
-            // Fallback: process individual queries for other algorithms
-            _ => {
-                let mut results = Vec::with_capacity(queries.len());
-                for &(query_start, query_end) in queries {
-                    let mut matches = Vec::new();
-                    self.get(key, query_start, query_end, |pos| {
-                        matches.push(pos);
-                    });
-                    results.push(matches);
-                }
-                results
             }
         }
     }

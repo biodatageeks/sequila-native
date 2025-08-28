@@ -40,41 +40,6 @@ strum_macros = "0.26.3"
 name = "databio_benchmark"
 harness = false
 
-[[bench]]
-name = "apple_silicon_benchmark"
-harness = false
-
-[[bench]]
-name = "simd_benchmark_10k"
-harness = false
-
-[[bench]]
-name = "query_batching_benchmark"
-harness = false
-
-[[bench]]
-name = "simd_two_dataset_benchmark"
-harness = false
-
-[[bench]]
-name = "chromsweep_benchmark"
-harness = false
-
-[[bench]]
-name = "chromsweep_vs_traditional_benchmark"
-harness = false
-
-[[bench]]
-name = "chromsweep_quick_comparison"
-harness = false
-
-[[bench]]
-name = "datafusion_optimization_benchmark"
-harness = false
-
-[[bench]]
-name = "ten_million_intervals_benchmark"
-harness = false
 
 [[bench]]
 name = "optimization_comparison_benchmark"
