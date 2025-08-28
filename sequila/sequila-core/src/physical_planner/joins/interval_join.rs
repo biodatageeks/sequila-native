@@ -686,6 +686,7 @@ enum IntervalJoinAlgorithm {
     IntervalTree(FnvHashMap<u64, rust_bio::IntervalTree<i32, Position>>),
     ArrayIntervalTree(FnvHashMap<u64, rust_bio::ArrayBackedIntervalTree<i32, Position>>),
     Lapper(FnvHashMap<u64, rust_lapper::Lapper<u32, Position>>),
+    SuperIntervals(FnvHashMap<u64, superintervals::IntervalMap<Position>>),
     CoitreesNearest(
         FnvHashMap<
             u64,
@@ -719,6 +720,9 @@ impl Debug for IntervalJoinAlgorithm {
                 f.debug_struct("ArrayIntervalTree").field("0", m).finish()
             }
             IntervalJoinAlgorithm::Lapper(m) => f.debug_struct("Lapper").field("0", m).finish(),
+            IntervalJoinAlgorithm::SuperIntervals(m) => {
+                f.debug_struct("SuperIntervals").field("0", m).finish()
+            }
         }
     }
 }
@@ -814,6 +818,20 @@ impl IntervalJoinAlgorithm {
                     .collect::<FnvHashMap<u64, Lapper<u32, Position>>>();
 
                 IntervalJoinAlgorithm::Lapper(hashmap)
+            }
+            Algorithm::SuperIntervals => {
+                let hashmap = hash_map
+                    .into_iter()
+                    .map(|(k, v)| {
+                        let mut map = superintervals::IntervalMap::new();
+                        for s in v {
+                            map.add(s.start, s.end, s.position);
+                        }
+                        map.build();
+                        (k, map)
+                    })
+                    .collect::<FnvHashMap<u64, superintervals::IntervalMap<Position>>>();
+                IntervalJoinAlgorithm::SuperIntervals(hashmap)
             }
         }
     }
@@ -951,6 +969,13 @@ impl IntervalJoinAlgorithm {
                 if let Some(lapper) = hashmap.get(&k) {
                     for interval in lapper.find(start as u32, end as u32 + 1) {
                         f(interval.val)
+                    }
+                }
+            }
+            IntervalJoinAlgorithm::SuperIntervals(hashmap) => {
+                if let Some(intervals) = hashmap.get(&k) {
+                    for val in intervals.search_values_iter(start, end) {
+                        f(val);
                     }
                 }
             }
@@ -1344,6 +1369,7 @@ mod tests {
             Some(Algorithm::Coitrees),
             Some(Algorithm::IntervalTree),
             Some(Algorithm::ArrayIntervalTree),
+            Some(Algorithm::SuperIntervals),
         ];
 
         for alg in algs {
@@ -1439,6 +1465,7 @@ mod tests {
             Some(Algorithm::IntervalTree),
             Some(Algorithm::ArrayIntervalTree),
             Some(Algorithm::Lapper),
+            Some(Algorithm::SuperIntervals),
         ];
 
         let schema = &schema();

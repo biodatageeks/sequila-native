@@ -65,6 +65,7 @@ pub enum Algorithm {
     IntervalTree,
     ArrayIntervalTree,
     Lapper,
+    SuperIntervals,
     CoitreesNearest,
     CoitreesCountOverlaps,
 }
@@ -90,6 +91,7 @@ impl FromStr for Algorithm {
             "intervaltree" => Ok(Algorithm::IntervalTree),
             "arrayintervaltree" => Ok(Algorithm::ArrayIntervalTree),
             "lapper" => Ok(Algorithm::Lapper),
+            "superintervals" => Ok(Algorithm::SuperIntervals),
             "coitreesnearest" => Ok(Algorithm::CoitreesNearest),
             "coitreescountoverlaps" => Ok(Algorithm::CoitreesCountOverlaps),
             _ => Err(ParseAlgorithmError(format!(
@@ -107,6 +109,7 @@ impl std::fmt::Display for Algorithm {
             Algorithm::IntervalTree => "IntervalTree",
             Algorithm::ArrayIntervalTree => "ArrayIntervalTree",
             Algorithm::Lapper => "Lapper",
+            Algorithm::SuperIntervals => "SuperIntervals",
             Algorithm::CoitreesNearest => "CoitreesNearest",
             Algorithm::CoitreesCountOverlaps => "CoitreesCountOverlaps",
         };

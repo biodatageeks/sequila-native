@@ -24,6 +24,7 @@ fnv = "1.0.7"
 bio = "2.0.1"
 rand = "0.8.5"
 rust-lapper = "1.1.0"
+superintervals = { path = "superintervals" }
 
 [dev-dependencies]
 rstest = "0.22.0"
