@@ -539,12 +539,12 @@ impl ExecutionPlan for IntervalJoinExec {
             reusable_match_buffer: Vec::with_capacity(256),
             reusable_rle_buffer: Vec::with_capacity(1024),
             reusable_index_buffer: Vec::with_capacity(2048),
-            // Default to 100K rows per output batch to prevent memory explosion
+            // Default to 50K rows per output batch to balance memory and performance
             // This can be configured via environment variable SEQUILA_MAX_OUTPUT_BATCH_SIZE
             max_output_batch_size: std::env::var("SEQUILA_MAX_OUTPUT_BATCH_SIZE")
-                .unwrap_or_else(|_| "100000".to_string())
+                .unwrap_or_else(|_| "50000".to_string())
                 .parse()
-                .unwrap_or(100_000),
+                .unwrap_or(50_000),
         }))
     }
 
@@ -1221,10 +1221,11 @@ impl IntervalJoinStream {
         let batch_size = state.batch.num_rows();
         let start_row_idx = state.probe_row_idx;
 
-        // Process rows in chunks to prevent memory explosion
-        let chunk_end = std::cmp::min(start_row_idx + self.max_output_batch_size / 100, batch_size);
+        // Process rows in larger chunks to reduce overhead while preventing memory explosion
+        let chunk_size = std::cmp::max(self.max_output_batch_size / 10, 1000);
+        let chunk_end = std::cmp::min(start_row_idx + chunk_size, batch_size);
 
-        let mut temp_matches = Vec::with_capacity(64);
+        let mut temp_matches = Vec::with_capacity(256);
         let mut total_output_rows = state.accumulated_left_matches.len();
 
         // Process chunk of probe rows
@@ -1260,10 +1261,12 @@ impl IntervalJoinStream {
                     state
                         .accumulated_left_matches
                         .extend_from_slice(&temp_matches);
-                    // Add right side indices (one per match)
-                    for _ in 0..temp_matches.len() {
-                        state.accumulated_right_indices.push(i as u32);
-                    }
+                    // Add right side indices (one per match) - optimized batch append
+                    let match_count = temp_matches.len();
+                    state.accumulated_right_indices.resize(
+                        state.accumulated_right_indices.len() + match_count,
+                        i as u32,
+                    );
                     total_output_rows += temp_matches.len();
                 }
             }
@@ -1271,6 +1274,9 @@ impl IntervalJoinStream {
             // Check if we should emit output batch to prevent memory explosion
             if total_output_rows >= self.max_output_batch_size {
                 state.probe_row_idx = i + 1;
+                timer.done();
+
+                // Emit matches by transitioning to emit state
                 self.state =
                     IntervalJoinStreamState::EmitAccumulatedMatches(ProcessProbeBatchState {
                         batch: state.batch.clone(),
@@ -1282,7 +1288,6 @@ impl IntervalJoinStream {
                             &mut state.accumulated_right_indices,
                         ),
                     });
-                timer.done();
                 return self.emit_accumulated_matches();
             }
         }
@@ -1293,6 +1298,7 @@ impl IntervalJoinStream {
         // If we've processed all rows in the batch, emit accumulated matches and move to next batch
         if chunk_end >= batch_size {
             if !state.accumulated_left_matches.is_empty() {
+                timer.done();
                 self.state =
                     IntervalJoinStreamState::EmitAccumulatedMatches(ProcessProbeBatchState {
                         batch: state.batch.clone(),
@@ -1304,7 +1310,6 @@ impl IntervalJoinStream {
                             &mut state.accumulated_right_indices,
                         ),
                     });
-                timer.done();
                 return self.emit_accumulated_matches();
             } else {
                 // No matches, move to next batch
@@ -1319,39 +1324,26 @@ impl IntervalJoinStream {
         Ok(StatefulStreamResult::Continue)
     }
 
-    fn emit_accumulated_matches(&mut self) -> Result<StatefulStreamResult<Option<RecordBatch>>> {
-        let state = match &mut self.state {
-            IntervalJoinStreamState::EmitAccumulatedMatches(state) => state,
-            _ => return internal_err!("Expected EmitAccumulatedMatches state"),
-        };
-
+    fn create_output_batch_from_data(
+        &self,
+        accumulated_left_matches: &[u32],
+        accumulated_right_indices: &[u32],
+        batch: &RecordBatch,
+    ) -> Result<RecordBatch> {
         let build_side = match self.build_side.as_ref() {
             Some(build_side) => Ok(build_side),
             None => internal_err!("Expected build side in ready state"),
         }?;
 
-        if state.accumulated_left_matches.is_empty() {
-            // No matches to emit, determine next state
-            if state.probe_row_idx >= state.batch.num_rows() {
-                // Done with this batch
-                self.state = IntervalJoinStreamState::FetchProbeBatch;
-            } else {
-                // More rows to process in current batch
-                self.state = IntervalJoinStreamState::ProcessProbeBatch(ProcessProbeBatchState {
-                    batch: state.batch.clone(),
-                    probe_row_idx: state.probe_row_idx,
-                    accumulated_left_matches: Vec::new(),
-                    accumulated_right_indices: Vec::new(),
-                });
-            }
-            return Ok(StatefulStreamResult::Continue);
+        if accumulated_left_matches.is_empty() {
+            return internal_err!("Cannot create output batch with no matches");
         }
 
         // Handle null markers for left side indices (u32::MAX indicates null)
-        let mut left_indices_with_nulls = Vec::with_capacity(state.accumulated_left_matches.len());
-        let mut validity = Vec::with_capacity(state.accumulated_left_matches.len());
+        let mut left_indices_with_nulls = Vec::with_capacity(accumulated_left_matches.len());
+        let mut validity = Vec::with_capacity(accumulated_left_matches.len());
 
-        for &idx in &state.accumulated_left_matches {
+        for &idx in accumulated_left_matches {
             if idx == u32::MAX {
                 left_indices_with_nulls.push(0u32); // Use 0 as dummy index
                 validity.push(false); // Mark as null
@@ -1371,8 +1363,7 @@ impl IntervalJoinStream {
             PrimitiveArray::<UInt32Type>::new(left_indices_with_nulls.into(), Some(null_buffer))
         };
 
-        let right_indexes =
-            PrimitiveArray::<UInt32Type>::from(state.accumulated_right_indices.clone());
+        let right_indexes = PrimitiveArray::<UInt32Type>::from(accumulated_right_indices.to_vec());
 
         let mut columns: Vec<Arc<dyn Array>> = Vec::with_capacity(self.schema.fields().len());
 
@@ -1381,7 +1372,7 @@ impl IntervalJoinStream {
                 let array = build_side.batch.column(column_index.index);
                 compute::take(array, &left_indexes, None)?
             } else if column_index.side == JoinSide::Right {
-                let array = state.batch.column(column_index.index);
+                let array = batch.column(column_index.index);
                 compute::take(array, &right_indexes, None)?
             } else {
                 panic!("Unsupported join_side {:?}", column_index.side);
@@ -1401,19 +1392,68 @@ impl IntervalJoinStream {
             self.join_metrics.output_rows.value()
         );
 
-        // Determine next state
-        if state.probe_row_idx >= state.batch.num_rows() {
+        Ok(result)
+    }
+
+    fn emit_accumulated_matches(&mut self) -> Result<StatefulStreamResult<Option<RecordBatch>>> {
+        // Extract all data first to avoid borrowing conflicts
+        let (accumulated_left_matches, accumulated_right_indices, batch, probe_row_idx) =
+            match &mut self.state {
+                IntervalJoinStreamState::EmitAccumulatedMatches(state) => {
+                    if state.accumulated_left_matches.is_empty() {
+                        // No matches to emit, determine next state
+                        let next_state = if state.probe_row_idx >= state.batch.num_rows() {
+                            IntervalJoinStreamState::FetchProbeBatch
+                        } else {
+                            IntervalJoinStreamState::ProcessProbeBatch(ProcessProbeBatchState {
+                                batch: state.batch.clone(),
+                                probe_row_idx: state.probe_row_idx,
+                                accumulated_left_matches: Vec::new(),
+                                accumulated_right_indices: Vec::new(),
+                            })
+                        };
+                        self.state = next_state;
+                        return Ok(StatefulStreamResult::Continue);
+                    }
+
+                    // Extract the data
+                    let accumulated_left_matches =
+                        std::mem::take(&mut state.accumulated_left_matches);
+                    let accumulated_right_indices =
+                        std::mem::take(&mut state.accumulated_right_indices);
+                    let batch = state.batch.clone();
+                    let probe_row_idx = state.probe_row_idx;
+
+                    (
+                        accumulated_left_matches,
+                        accumulated_right_indices,
+                        batch,
+                        probe_row_idx,
+                    )
+                }
+                _ => return internal_err!("Expected EmitAccumulatedMatches state"),
+            };
+
+        // Now we can safely call the method without borrowing conflicts
+        let result = self.create_output_batch_from_data(
+            &accumulated_left_matches,
+            &accumulated_right_indices,
+            &batch,
+        )?;
+
+        // Set next state
+        self.state = if probe_row_idx >= batch.num_rows() {
             // Done with this batch
-            self.state = IntervalJoinStreamState::FetchProbeBatch;
+            IntervalJoinStreamState::FetchProbeBatch
         } else {
             // More rows to process in current batch
-            self.state = IntervalJoinStreamState::ProcessProbeBatch(ProcessProbeBatchState {
-                batch: state.batch.clone(),
-                probe_row_idx: state.probe_row_idx,
+            IntervalJoinStreamState::ProcessProbeBatch(ProcessProbeBatchState {
+                batch,
+                probe_row_idx,
                 accumulated_left_matches: Vec::new(),
                 accumulated_right_indices: Vec::new(),
-            });
-        }
+            })
+        };
 
         Ok(StatefulStreamResult::Ready(Some(result)))
     }
