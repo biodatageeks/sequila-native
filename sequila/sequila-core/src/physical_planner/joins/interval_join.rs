@@ -1177,7 +1177,7 @@ impl IntervalJoinStream {
         let start = evaluate_as_i32(self.right_interval.start(), &state.batch)?;
         let end = evaluate_as_i32(self.right_interval.end(), &state.batch)?;
 
-        // Use simple batch processing (like original) for optimal performance
+        // Simple batch processing with memory-aware result creation
         let mut builder_left = PrimitiveBuilder::<UInt32Type>::new();
         let mut rle_right: Vec<u32> = Vec::with_capacity(self.hashes_buffer.len());
         let mut pos_vect: Vec<u32> = Vec::with_capacity(100);
@@ -1251,6 +1251,7 @@ impl IntervalJoinStream {
             result.num_rows()
         );
 
+        // Move to next probe batch after processing current one
         self.state = IntervalJoinStreamState::FetchProbeBatch;
 
         Ok(StatefulStreamResult::Ready(Some(result)))
