@@ -51,6 +51,7 @@ extensions_options! {
     pub struct SequilaConfig {
         pub prefer_interval_join: bool, default = true
         pub interval_join_algorithm: Algorithm, default = Algorithm::default()
+        pub interval_join_low_memory: bool, default = false
     }
 }
 

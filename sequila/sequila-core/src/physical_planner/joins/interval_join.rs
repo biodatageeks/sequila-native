@@ -104,6 +104,7 @@ pub struct IntervalJoinExec {
     cache: PlanProperties,
 
     algorithm: Algorithm,
+    low_memory: bool,
 }
 
 impl IntervalJoinExec {
@@ -119,6 +120,7 @@ impl IntervalJoinExec {
         partition_mode: PartitionMode,
         null_equals_null: bool,
         algorithm: Algorithm,
+        low_memory: bool,
     ) -> Result<Self> {
         let left_schema = left.schema();
         let right_schema = right.schema();
@@ -165,6 +167,7 @@ impl IntervalJoinExec {
             null_equals_null,
             cache,
             algorithm,
+            low_memory,
         })
     }
 
@@ -247,6 +250,7 @@ impl IntervalJoinExec {
             self.mode,
             self.null_equals_null,
             self.algorithm,
+            self.low_memory,
         )
     }
 
@@ -436,6 +440,7 @@ impl ExecutionPlan for IntervalJoinExec {
             self.mode,
             self.null_equals_null,
             self.algorithm,
+            self.low_memory,
         )?))
     }
 
@@ -535,6 +540,7 @@ impl ExecutionPlan for IntervalJoinExec {
             state: IntervalJoinStreamState::WaitBuildSide,
             build_side: None,
             hashes_buffer: vec![],
+            low_memory: self.low_memory,
         }))
     }
 
@@ -1045,6 +1051,8 @@ struct IntervalJoinStream {
     state: IntervalJoinStreamState,
     build_side: Option<Arc<JoinLeftData>>,
     hashes_buffer: Vec<u64>,
+    /// When true, use capped, streaming-friendly emission with continuation; otherwise process fully.
+    low_memory: bool,
 }
 
 struct ProcessProbeBatchState {
@@ -1176,85 +1184,212 @@ impl IntervalJoinStream {
 
         let start = evaluate_as_i32(self.right_interval.start(), &state.batch)?;
         let end = evaluate_as_i32(self.right_interval.end(), &state.batch)?;
+        // Two modes: low-memory (streaming/capped) vs. full-batch (pre-streaming behavior)
+        if self.low_memory {
+            // Output-size limited processing to prevent memory explosion
+            let mut builder_left = PrimitiveBuilder::<UInt32Type>::new();
+            let mut rle_right: Vec<u32> = Vec::with_capacity(self.hashes_buffer.len());
+            let mut pos_vect: Vec<u32> = Vec::with_capacity(100);
 
-        // Simple batch processing with memory-aware result creation
-        let mut builder_left = PrimitiveBuilder::<UInt32Type>::new();
-        let mut rle_right: Vec<u32> = Vec::with_capacity(self.hashes_buffer.len());
-        let mut pos_vect: Vec<u32> = Vec::with_capacity(100);
+            const MAX_OUTPUT_ROWS: usize = 1_000_000; // 1M rows max per output batch
+            let mut total_output_rows = 0;
+            let mut processed_input_rows = 0;
 
-        for (i, hash_val) in self.hashes_buffer.iter().enumerate() {
-            build_side
-                .hash_map
-                .get(*hash_val, start.value(i), end.value(i), |pos| {
-                    pos_vect.push(pos as u32);
-                });
-            match &build_side.hash_map {
-                IntervalJoinAlgorithm::CoitreesNearest(_t) => {
-                    // even if there is no hit we need to preserve the right side
-                    rle_right.push(1);
-                    if pos_vect.is_empty() {
-                        builder_left.append_null();
+            for (i, hash_val) in self.hashes_buffer.iter().enumerate() {
+                build_side
+                    .hash_map
+                    .get(*hash_val, start.value(i), end.value(i), |pos| {
+                        pos_vect.push(pos as u32);
+                    });
+
+                let matches_for_this_row = pos_vect.len();
+
+                match &build_side.hash_map {
+                    IntervalJoinAlgorithm::CoitreesNearest(_)
+                    | IntervalJoinAlgorithm::CoitreesCountOverlaps(_) => {
+                        if total_output_rows >= MAX_OUTPUT_ROWS {
+                            break;
+                        }
+                        rle_right.push(1);
+                        if pos_vect.is_empty() {
+                            builder_left.append_null();
+                        } else {
+                            builder_left.append_slice(&pos_vect);
+                        }
+                        total_output_rows += 1;
+                    }
+                    _ => {
+                        if total_output_rows + matches_for_this_row > MAX_OUTPUT_ROWS
+                            && total_output_rows > 0
+                        {
+                            break;
+                        }
+                        rle_right.push(pos_vect.len() as u32);
+                        builder_left.append_slice(&pos_vect);
+                        total_output_rows += matches_for_this_row;
+                    }
+                }
+                pos_vect.clear();
+                processed_input_rows += 1;
+            }
+
+            if processed_input_rows < self.hashes_buffer.len() {
+                let remaining_batch = state.batch.slice(
+                    processed_input_rows,
+                    state.batch.num_rows() - processed_input_rows,
+                );
+                let remaining_hashes = self.hashes_buffer[processed_input_rows..].to_vec();
+
+                let continuation_data = Some((remaining_batch, remaining_hashes));
+
+                let (left_indexes, index_right, _should_continue_processing, continuation) = {
+                    let left_indexes = builder_left.finish();
+                    let mut index_right = Vec::with_capacity(left_indexes.len());
+                    for i in 0..rle_right.len() {
+                        for _ in 0..rle_right[i] {
+                            index_right.push(i as u32);
+                        }
+                    }
+                    (left_indexes, index_right, true, continuation_data)
+                };
+
+                // Build right index array
+                let right_indexes = PrimitiveArray::from(index_right);
+
+                // Build result columns
+                let mut columns: Vec<Arc<dyn Array>> =
+                    Vec::with_capacity(self.schema.fields().len());
+                for column_index in &self.column_indices {
+                    let array: Arc<dyn Array> = if column_index.side == JoinSide::Left {
+                        let array = build_side.batch.column(column_index.index);
+                        compute::take(array, &left_indexes, None)?
+                    } else if column_index.side == JoinSide::Right {
+                        let array = state.batch.column(column_index.index);
+                        compute::take(array, &right_indexes, None)?
                     } else {
+                        panic!("Unsupported join_side {:?}", column_index.side);
+                    };
+                    columns.push(array);
+                }
+
+                let result = RecordBatch::try_new(self.schema.clone(), columns)?;
+
+                // Update state for continuation
+                if let Some((remaining_batch, remaining_hashes)) = continuation {
+                    self.state =
+                        IntervalJoinStreamState::ProcessProbeBatch(ProcessProbeBatchState {
+                            batch: remaining_batch,
+                        });
+                    self.hashes_buffer = remaining_hashes;
+                }
+
+                self.join_metrics.output_batches.add(1);
+                self.join_metrics.output_rows.add(result.num_rows());
+                timer.done();
+
+                return Ok(StatefulStreamResult::Ready(Some(result)));
+            }
+
+            let left_indexes = builder_left.finish();
+            let mut index_right = Vec::with_capacity(left_indexes.len());
+            for i in 0..rle_right.len() {
+                for _ in 0..rle_right[i] {
+                    index_right.push(i as u32);
+                }
+            }
+            let right_indexes = PrimitiveArray::from(index_right);
+
+            let mut columns: Vec<Arc<dyn Array>> = Vec::with_capacity(self.schema.fields().len());
+
+            for column_index in &self.column_indices {
+                let array: Arc<dyn Array> = if column_index.side == JoinSide::Left {
+                    let array = build_side.batch.column(column_index.index);
+                    compute::take(array, &left_indexes, None)?
+                } else if column_index.side == JoinSide::Right {
+                    let array = state.batch.column(column_index.index);
+                    compute::take(array, &right_indexes, None)?
+                } else {
+                    panic!("Unsupported join_side {:?}", column_index.side);
+                };
+                columns.push(array);
+            }
+
+            let result = RecordBatch::try_new(self.schema.clone(), columns)?;
+
+            self.join_metrics.output_batches.add(1);
+            self.join_metrics.output_rows.add(result.num_rows());
+            timer.done();
+
+            log::debug!(
+                "{:?} is done processing batch {:?} with {:?} output rows",
+                std::thread::current().id(),
+                self.join_metrics.output_batches.value(),
+                result.num_rows()
+            );
+
+            self.state = IntervalJoinStreamState::FetchProbeBatch;
+            Ok(StatefulStreamResult::Ready(Some(result)))
+        } else {
+            // Full processing mode: process entire batch without capping or continuation
+            let mut builder_left = PrimitiveBuilder::<UInt32Type>::new();
+            let mut rle_right: Vec<u32> = Vec::with_capacity(self.hashes_buffer.len());
+            let mut pos_vect: Vec<u32> = Vec::with_capacity(256);
+
+            for (i, hash_val) in self.hashes_buffer.iter().enumerate() {
+                build_side
+                    .hash_map
+                    .get(*hash_val, start.value(i), end.value(i), |pos| {
+                        pos_vect.push(pos as u32);
+                    });
+
+                match &build_side.hash_map {
+                    IntervalJoinAlgorithm::CoitreesNearest(_)
+                    | IntervalJoinAlgorithm::CoitreesCountOverlaps(_) => {
+                        rle_right.push(1);
+                        if pos_vect.is_empty() {
+                            builder_left.append_null();
+                        } else {
+                            builder_left.append_slice(&pos_vect);
+                        }
+                    }
+                    _ => {
+                        rle_right.push(pos_vect.len() as u32);
                         builder_left.append_slice(&pos_vect);
                     }
                 }
-                IntervalJoinAlgorithm::CoitreesCountOverlaps(_t) => {
-                    rle_right.push(1);
-                    if pos_vect.is_empty() {
-                        builder_left.append_null();
-                    } else {
-                        builder_left.append_slice(&pos_vect);
-                    }
-                }
-                _ => {
-                    rle_right.push(pos_vect.len() as u32);
-                    builder_left.append_slice(&pos_vect);
+                pos_vect.clear();
+            }
+
+            let left_indexes = builder_left.finish();
+            let mut index_right = Vec::with_capacity(left_indexes.len());
+            for i in 0..rle_right.len() {
+                for _ in 0..rle_right[i] {
+                    index_right.push(i as u32);
                 }
             }
-            pos_vect.clear();
-        }
+            let right_indexes = PrimitiveArray::from(index_right);
 
-        let left_indexes = builder_left.finish();
-        let mut index_right = Vec::with_capacity(left_indexes.len());
-        for i in 0..rle_right.len() {
-            for _ in 0..rle_right[i] {
-                index_right.push(i as u32);
+            let mut columns: Vec<Arc<dyn Array>> = Vec::with_capacity(self.schema.fields().len());
+            for column_index in &self.column_indices {
+                let array: Arc<dyn Array> = if column_index.side == JoinSide::Left {
+                    let array = build_side.batch.column(column_index.index);
+                    compute::take(array, &left_indexes, None)?
+                } else if column_index.side == JoinSide::Right {
+                    let array = state.batch.column(column_index.index);
+                    compute::take(array, &right_indexes, None)?
+                } else {
+                    panic!("Unsupported join_side {:?}", column_index.side);
+                };
+                columns.push(array);
             }
+
+            let result = RecordBatch::try_new(self.schema.clone(), columns)?;
+            self.join_metrics.output_batches.add(1);
+            self.join_metrics.output_rows.add(result.num_rows());
+            timer.done();
+            self.state = IntervalJoinStreamState::FetchProbeBatch;
+            Ok(StatefulStreamResult::Ready(Some(result)))
         }
-        let right_indexes = PrimitiveArray::from(index_right);
-
-        let mut columns: Vec<Arc<dyn Array>> = Vec::with_capacity(self.schema.fields().len());
-
-        for column_index in &self.column_indices {
-            let array: Arc<dyn Array> = if column_index.side == JoinSide::Left {
-                let array = build_side.batch.column(column_index.index);
-                compute::take(array, &left_indexes, None)?
-            } else if column_index.side == JoinSide::Right {
-                let array = state.batch.column(column_index.index);
-                compute::take(array, &right_indexes, None)?
-            } else {
-                panic!("Unsupported join_side {:?}", column_index.side);
-            };
-            columns.push(array);
-        }
-
-        let result = RecordBatch::try_new(self.schema.clone(), columns)?;
-
-        self.join_metrics.output_batches.add(1);
-        self.join_metrics.output_rows.add(result.num_rows());
-        timer.done();
-
-        log::debug!(
-            "{:?} is done processing batch {:?} with {:?} output rows",
-            std::thread::current().id(),
-            self.join_metrics.output_batches.value(),
-            result.num_rows()
-        );
-
-        // Move to next probe batch after processing current one
-        self.state = IntervalJoinStreamState::FetchProbeBatch;
-
-        Ok(StatefulStreamResult::Ready(Some(result)))
     }
 }
 
@@ -1350,6 +1485,7 @@ mod tests {
         let sequila_config = SequilaConfig {
             prefer_interval_join: algorithm.is_some(),
             interval_join_algorithm: algorithm.unwrap_or_default(),
+            ..Default::default()
         };
 
         let config = SessionConfig::from(options)
