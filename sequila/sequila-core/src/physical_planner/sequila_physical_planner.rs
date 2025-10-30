@@ -40,6 +40,8 @@ impl PhysicalOptimizerRule for IntervalJoinPhysicalOptimizationRule {
 
         let algorithm = sequila_config.interval_join_algorithm;
 
+        let low_memory = sequila_config.interval_join_low_memory;
+
         plan.transform_up(|plan| {
             match plan.as_any().downcast_ref::<HashJoinExec>() {
                 Some(join_exec) => {
@@ -50,6 +52,7 @@ impl PhysicalOptimizerRule for IntervalJoinPhysicalOptimizationRule {
                             join_exec,
                             intervals,
                             algorithm,
+                            low_memory,
                         )?;
                         Ok(Transformed::yes(new_plan))
                     } else {
@@ -70,6 +73,7 @@ impl PhysicalOptimizerRule for IntervalJoinPhysicalOptimizationRule {
                                     join_exec,
                                     intervals,
                                     algorithm,
+                                    low_memory,
                                 )?;
                                 Ok(Transformed::yes(new_plan))
                             } else {
@@ -100,7 +104,10 @@ fn from_hash_join(
     join_exec: &HashJoinExec,
     intervals: ColIntervals,
     algorithm: Algorithm,
+    low_memory: bool,
 ) -> Result<Arc<dyn ExecutionPlan>> {
+    // Determine low-memory mode from session extensions if available
+    // (passed through in IntervalJoinExec below)
     let new_plan = IntervalJoinExec::try_new(
         join_exec.left().clone(),
         join_exec.right().clone(),
@@ -112,6 +119,7 @@ fn from_hash_join(
         *join_exec.partition_mode(),
         join_exec.null_equals_null,
         algorithm,
+        low_memory,
     )?;
     Ok(Arc::new(new_plan))
 }
@@ -120,6 +128,7 @@ fn from_nested_loop_join(
     join_exec: &NestedLoopJoinExec,
     intervals: ColIntervals,
     algorithm: Algorithm,
+    low_memory: bool,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let new_plan = IntervalJoinExec::try_new(
         join_exec.left().clone(),
@@ -132,6 +141,7 @@ fn from_nested_loop_join(
         PartitionMode::CollectLeft,
         true,
         algorithm,
+        low_memory,
     )?;
 
     Ok(Arc::new(new_plan))
