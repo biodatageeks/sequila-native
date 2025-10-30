@@ -1,6 +1,6 @@
 # DataFusion Integration Spec Delta
 
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: DataFusion Version Compatibility
 The system SHALL integrate with Apache DataFusion version 50.3.0 (or latest available 50.x series release) and datafusion-cli 50.3.0, maintaining compatibility with DataFusion's execution planning, physical operator, and session configuration APIs.
