@@ -570,6 +570,7 @@ impl ExecutionPlan for IntervalJoinExec {
             self.mode,
             self.null_equals_null,
             self.algorithm,
+            self.low_memory,
         )?))
     }
 
