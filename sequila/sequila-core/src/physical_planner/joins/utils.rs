@@ -228,7 +228,11 @@ fn estimate_join_cardinality(
             })
         }
 
-        JoinType::LeftSemi | JoinType::RightSemi | JoinType::LeftAnti | JoinType::RightAnti => None,
+        JoinType::LeftSemi
+        | JoinType::RightSemi
+        | JoinType::LeftAnti
+        | JoinType::RightAnti
+        | JoinType::RightMark => None,
     }
 }
 
@@ -493,21 +497,25 @@ pub(crate) fn symmetric_join_output_partitioning(
     left: &Arc<dyn ExecutionPlan>,
     right: &Arc<dyn ExecutionPlan>,
     join_type: &JoinType,
-) -> Partitioning {
+) -> Result<Partitioning> {
     let left_columns_len = left.schema().fields.len();
     let left_partitioning = left.output_partitioning();
     let right_partitioning = right.output_partitioning();
     match join_type {
         JoinType::Left | JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark => {
-            left_partitioning.clone()
+            Ok(left_partitioning.clone())
         }
-        JoinType::RightSemi | JoinType::RightAnti => right_partitioning.clone(),
+        JoinType::RightSemi | JoinType::RightAnti | JoinType::RightMark => {
+            Ok(right_partitioning.clone())
+        }
         JoinType::Inner | JoinType::Right => {
             adjust_right_output_partitioning(right_partitioning, left_columns_len)
         }
         JoinType::Full => {
             // We could also use left partition count as they are necessarily equal.
-            Partitioning::UnknownPartitioning(right_partitioning.partition_count())
+            Ok(Partitioning::UnknownPartitioning(
+                right_partitioning.partition_count(),
+            ))
         }
     }
 }

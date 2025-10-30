@@ -3,7 +3,7 @@ use crate::physical_planner::joins::interval_join::IntervalJoinExec;
 use crate::session_context::{Algorithm, SequilaConfig};
 use async_trait::async_trait;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
-use datafusion::common::{DFSchema, Result};
+use datafusion::common::{DFSchema, NullEquality, Result};
 use datafusion::config::ConfigOptions;
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::{Expr, LogicalPlan};
@@ -110,7 +110,7 @@ fn from_hash_join(
         &join_exec.join_type,
         join_exec.projection.clone(),
         *join_exec.partition_mode(),
-        join_exec.null_equals_null,
+        join_exec.null_equality() == NullEquality::NullEqualsNull,
         algorithm,
     )?;
     Ok(Arc::new(new_plan))
