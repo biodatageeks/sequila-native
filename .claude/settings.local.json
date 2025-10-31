@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:ml-explore.github.io)",
+      "Bash(cargo check:*)",
+      "WebFetch(domain:docs.rs)",
+      "Bash(cargo doc:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo bench:*)",
+      "Bash(timeout 120s cargo bench --bench quick_optimization_test)",
+      "Bash(git add src/physical_planner/joins/interval_join.rs Cargo.toml benches/datafusion_optimized_benchmark.rs)",
+      "Bash(grep:*)",
+      "Bash(sed:*)",
+      "Bash(git commit:*)",
+      "Bash(git cherry-pick:*)",
+      "Bash(git add:*)",
+      "Bash(git reset:*)",
+      "Bash(git checkout:*)",
+      "Bash(git unstage:*)",
+      "Bash(pre-commit run:*)",
+      "Bash(python3:*)",
+      "Bash(git log:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

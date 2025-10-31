@@ -273,16 +273,18 @@ impl IntervalJoinExec {
             &Self::maintains_input_order(join_type),
             Some(Self::probe_side()),
             on,
-        );
+        )?;
 
         // Get output partitioning:
         let left_columns_len = left.schema().fields.len();
         let mut output_partitioning = match mode {
             PartitionMode::CollectLeft => match join_type {
                 JoinType::Inner | JoinType::Right => {
-                    adjust_right_output_partitioning(right.output_partitioning(), left_columns_len)
+                    adjust_right_output_partitioning(right.output_partitioning(), left_columns_len)?
                 }
-                JoinType::RightSemi | JoinType::RightAnti => right.output_partitioning().clone(),
+                JoinType::RightSemi | JoinType::RightAnti | JoinType::RightMark => {
+                    right.output_partitioning().clone()
+                }
                 JoinType::Left
                 | JoinType::LeftSemi
                 | JoinType::LeftAnti
@@ -292,7 +294,7 @@ impl IntervalJoinExec {
                 }
             },
             PartitionMode::Partitioned => {
-                symmetric_join_output_partitioning(left, right, &join_type)
+                symmetric_join_output_partitioning(left, right, &join_type)?
             }
             PartitionMode::Auto => {
                 Partitioning::UnknownPartitioning(right.output_partitioning().partition_count())
@@ -552,6 +554,24 @@ impl ExecutionPlan for IntervalJoinExec {
                 .parse()
                 .unwrap_or(100_000),
         }))
+    }
+
+    fn reset_state(self: Arc<Self>) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        // IntervalJoinExec uses OnceAsync for left side building which is
+        // single-use per execution. Recreate the plan with fresh state.
+        Ok(Arc::new(IntervalJoinExec::try_new(
+            self.left.clone(),
+            self.right.clone(),
+            self.on.clone(),
+            self.filter.clone(),
+            self.intervals.clone(),
+            &self.join_type,
+            self.projection.clone(),
+            self.mode,
+            self.null_equals_null,
+            self.algorithm,
+            self.low_memory,
+        )?))
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
@@ -874,11 +894,12 @@ impl IntervalJoinAlgorithm {
         node.metadata
     }
 
-    /// for Apple Intel, Apple M1+(both optimized and not) and optimized (target-cpu=native) on Linux x64
+    /// for Apple Intel, Apple M1+(both optimized and not) and optimized (target-cpu=native) on Linux x64 and Linux aarch64
     #[cfg(any(
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "macos", target_arch = "x86_64", target_feature = "avx"),
         all(target_os = "linux", target_arch = "x86_64", target_feature = "avx"),
+        all(target_os = "linux", target_arch = "aarch64"),
         all(target_os = "windows", target_arch = "x86_64", target_feature = "avx")
     ))]
     fn extract_position(&self, node: &coitrees::Interval<&Position>) -> Position {
