@@ -1,3 +1,6 @@
+# Deprecation note
+This reopository is no longer active. Please use [https://github.com/biodatageeks/datafusion-bio-functions](https://github.com/biodatageeks/datafusion-bio-functions) instead.
+
 # sequila-native
 A set of native implementation of common bioinformatics algorithms to be used as Arrow-DataFusion or SeQuiLa (Apache Spark) extensions.
 
